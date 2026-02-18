@@ -20,7 +20,7 @@ class MessageGenerator:
             base_url="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPENROUTER_API_KEY"),
         )
-        self.model = model or os.getenv('MODEL_NAME', 'anthropic/claude-sonnet-4')
+        self.model = model or os.getenv('MODEL_NAME')
     
     def _build_prompt(self, job: JobListing, research: Optional[CompanyResearch] = None) -> str:
         """Build prompt for message generation"""
