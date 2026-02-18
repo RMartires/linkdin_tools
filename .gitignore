@@ -47,3 +47,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Browser session data (cookies, localStorage, etc.)
+.browser_data/
