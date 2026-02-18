@@ -2,10 +2,11 @@
 
 import os
 from typing import Optional
-from browser_use import Agent, ChatOpenAI
+from browser_use import Agent, ChatOpenAI, Browser
 from dotenv import load_dotenv
 
 from src.models import CompanyResearch, JobListing
+from src.session_manager import SessionManager
 from src.utils.logger import logger
 
 load_dotenv()
@@ -14,14 +15,21 @@ load_dotenv()
 class CompanyResearcher:
     """Research companies using browser-use"""
     
-    def __init__(self, model: Optional[str] = None):
-        """Initialize company researcher with OpenRouter LLM"""
-        model_name = model or os.getenv('MODEL_NAME')
+    def __init__(self, model: Optional[str] = None, browser: Optional[Browser] = None):
+        """Initialize company researcher with OpenRouter LLM
+        
+        Args:
+            model: Optional model name override
+            browser: Optional Browser instance (for session persistence)
+        """
+        model_name = model or os.getenv('MODEL_NAME', 'anthropic/claude-sonnet-4')
         self.llm = ChatOpenAI(
             model=model_name,
             base_url='https://openrouter.ai/api/v1',
             api_key=os.getenv('OPENROUTER_API_KEY'),
         )
+        self.browser = browser
+        self.session_manager = SessionManager()
     
     async def research_company(self, job: JobListing) -> CompanyResearch:
         """
@@ -77,10 +85,16 @@ class CompanyResearcher:
             linkedin_url: Optional[str] = None
         
         try:
-            # Create browser-use agent
+            # Get browser instance (with session persistence if available)
+            browser = self.browser
+            if not browser:
+                browser = self.session_manager.get_browser(headless=False)
+            
+            # Create browser-use agent with persistent browser
             agent = Agent(
                 task=task_prompt,
                 llm=self.llm,
+                browser=browser,
                 use_vision=False,
             )
             

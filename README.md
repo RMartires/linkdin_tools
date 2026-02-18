@@ -69,6 +69,13 @@ Automated tool for scraping LinkedIn jobs, researching companies, and generating
      - Examples: `openai/gpt-4o`, `google/gemini-pro`, `anthropic/claude-sonnet-4`
      - See available models at https://openrouter.ai/models
 
+6. **Set up LinkedIn session (first time only):**
+   - Run the tool once: `python main.py --keywords "test"`
+   - Browser will open - log into LinkedIn manually
+   - Session will be saved automatically in `.browser_data/`
+   - Future runs will use saved session (no login needed)
+   - See `SESSION_SETUP.md` for detailed instructions
+
 ## Usage
 
 ### Run Full Pipeline

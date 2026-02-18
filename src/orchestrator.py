@@ -8,6 +8,7 @@ from src.database import Database
 from src.job_scraper import JobScraper
 from src.company_researcher import CompanyResearcher
 from src.message_generator import MessageGenerator
+from src.session_manager import SessionManager
 from src.models import JobListing, CompanyResearch, GeneratedMessage, JobPipeline
 from src.utils.logger import logger
 
@@ -24,8 +25,14 @@ class Orchestrator:
         """
         self.db = db
         self.model = model
-        self.job_scraper = JobScraper(model=model)
-        self.company_researcher = CompanyResearcher(model=model)
+        self.session_manager = SessionManager()
+        
+        # Create shared browser instance for session persistence
+        # This ensures all components use the same LinkedIn session
+        self.browser = self.session_manager.get_browser(headless=False)
+        
+        self.job_scraper = JobScraper(model=model, browser=self.browser)
+        self.company_researcher = CompanyResearcher(model=model, browser=self.browser)
         self.message_generator = MessageGenerator(model=model)
     
     async def scrape_jobs(

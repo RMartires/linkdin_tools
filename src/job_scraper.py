@@ -4,10 +4,11 @@ import os
 import re
 from typing import List, Optional
 from urllib.parse import urlparse, parse_qs
-from browser_use import Agent, ChatOpenAI
+from browser_use import Agent, ChatOpenAI, Browser
 from dotenv import load_dotenv
 
 from src.models import JobListing
+from src.session_manager import SessionManager
 from src.utils.logger import logger
 
 load_dotenv()
@@ -16,14 +17,21 @@ load_dotenv()
 class JobScraper:
     """Scrape LinkedIn jobs using browser-use"""
     
-    def __init__(self, model: Optional[str] = None):
-        """Initialize job scraper with OpenRouter LLM"""
+    def __init__(self, model: Optional[str] = None, browser: Optional[Browser] = None):
+        """Initialize job scraper with OpenRouter LLM
+        
+        Args:
+            model: Optional model name override
+            browser: Optional Browser instance (for session persistence)
+        """
         model_name = model or os.getenv('MODEL_NAME')
         self.llm = ChatOpenAI(
             model=model_name,
             base_url='https://openrouter.ai/api/v1',
             api_key=os.getenv('OPENROUTER_API_KEY'),
         )
+        self.browser = browser
+        self.session_manager = SessionManager()
     
     def _extract_job_id(self, url: str) -> Optional[str]:
         """Extract job ID from LinkedIn URL"""
@@ -51,8 +59,6 @@ class JobScraper:
         max_results: int = 50
     ) -> List[JobListing]:
         """
-        Scrape LinkedIn jobs
-        
         Args:
             keywords: Job search keywords
             location: Location filter (optional)
@@ -70,8 +76,16 @@ class JobScraper:
         if location:
             search_query += f" in {location}"
         
+        linkdin_email = os.getenv('LINKDIN_EMAIL')
+        linkdin_password = os.getenv('LINKDIN_PASSWORD')
         # Build task prompt
         task_prompt = f"""
+        Goto link: https://www.linkedin.com/
+        click the "sign in with email" button then when we see the login form
+        enter and login with these creds: 
+            - email: {linkdin_email}
+            - password: {linkdin_password}
+
         Navigate to LinkedIn Jobs and search for: {search_query}
         
         Extract all job listings with the following details:
@@ -112,10 +126,14 @@ class JobScraper:
             jobs: TypingList[JobListingSchema]
         
         try:
-            # Create browser-use agent
+            browser = self.browser
+            if not browser:
+                browser = self.session_manager.get_browser(headless=False)
+            
             agent = Agent(
                 task=task_prompt,
                 llm=self.llm,
+                browser=browser,
                 use_vision=False,
             )
             
