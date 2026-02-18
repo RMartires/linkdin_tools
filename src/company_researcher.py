@@ -16,7 +16,7 @@ class CompanyResearcher:
     
     def __init__(self, model: Optional[str] = None):
         """Initialize company researcher with OpenRouter LLM"""
-        model_name = model or os.getenv('MODEL_NAME', 'anthropic/claude-sonnet-4')
+        model_name = model or os.getenv('MODEL_NAME')
         self.llm = ChatOpenAI(
             model=model_name,
             base_url='https://openrouter.ai/api/v1',

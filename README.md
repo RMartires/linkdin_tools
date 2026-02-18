@@ -65,7 +65,7 @@ Automated tool for scraping LinkedIn jobs, researching companies, and generating
 5. **Get API keys and configure:**
    - **OpenRouter API key**: Get one at https://openrouter.ai/keys
    - Add to `.env` as `OPENROUTER_API_KEY`
-   - **Model selection**: Set `MODEL_NAME` in `.env` (defaults to `anthropic/claude-sonnet-4`)
+   - **Model selection**: Set `MODEL_NAME` in `.env`
      - Examples: `openai/gpt-4o`, `google/gemini-pro`, `anthropic/claude-sonnet-4`
      - See available models at https://openrouter.ai/models
 
