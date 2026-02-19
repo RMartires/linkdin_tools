@@ -92,38 +92,45 @@ class JobScraper:
         linkdin_password = os.getenv('LINKDIN_PASSWORD')
         # Build task prompt
         task_prompt = f"""
+        IMPORTANT: Use click, input, scroll, and extract actions only. Do NOT use search_page action.
+        
         step 1:
-        Goto link: https://www.linkedin.com/
+        Navigate to: https://www.linkedin.com/
 
         step 2:
-        check if user is already loggedin if not u will see a screen with button "sign in with email"
-        if not logged in then:
-            click the "sign in with email" button then when we see the login form
-            enter and login with these creds: 
+        Check if user is already logged in. If not, you will see a screen with button "sign in with email".
+        If not logged in:
+            - Click the "sign in with email" button
+            - When the login form appears, use input action to enter:
                 - email: {linkdin_email}
                 - password: {linkdin_password}
-
-        else if logged in continue
-        Navigate to LinkedIn Jobs at: https://www.linkedin.com/jobs in the same tab 
+            - Click the sign in/submit button
+        If already logged in, continue to next step.
+        
+        Navigate to LinkedIn Jobs at: https://www.linkedin.com/jobs
 
         step 3:
-        wait for page to load fully
-        check the component at top left section of the navbar and input for search query: {search_query}
+        Wait for page to load fully.
+        Find the search input field in the top left section of the navbar (it may say "Search jobs" or similar).
+        Use click action to focus on the search input field, then use input action to type: {search_query}
+        Press Enter or click the search button to submit.
 
         step 4:
-        wait for page to load fully
-        now the list loads check for element on the left, this is the list of jobs, 
-        this will have a scroll bar to scroll to all the jobs in this page
+        Wait for page to load fully.
+        now the list is loaded check left section on the screen, this is the list of jobs (the list will be nested inside a <ul></ul> element)
+        this will have a scroll bar to scroll to all the jobs in this page, make sure to focus the mouse on this ul section before scrolling for scroll to work
+        a sucessful scroll is when the list of jobs visible changes, make sure to detect this if the list did not change then try clicking on the left list section and then scroll
 
         step 5:
-        wait for page to load fully
-        Extract all job listings with the following details:
+        Wait for page to load fully.
+        Extract all visible job listings with the following details:
         - Job title (Required)
         - Company name (Required)
         - Location
         - Posted date (if available)
+        - Job URL (if available)
         
-        Scroll through the results to find at least {max_results} jobs.
+        Continue scrolling through the results and extracting jobs until you have found at least {max_results} jobs.
         Extract as many jobs as possible from the search results.
         """
         
