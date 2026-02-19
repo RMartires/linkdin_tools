@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from src.database import Database
-from src.job_scraper import JobScraper
+from src.job_scraper_playwright import JobScraperPlaywright
 from src.company_researcher import CompanyResearcher
 from src.message_generator import MessageGenerator
 from src.session_manager import SessionManager
@@ -27,13 +27,21 @@ class Orchestrator:
         self.model = model
         self.session_manager = SessionManager()
         
-        # Create shared browser instance for session persistence
-        # This ensures all components use the same LinkedIn session
-        self.browser = self.session_manager.get_browser(headless=False)
+        # Create shared browser instances for session persistence
+        # JobScraperPlaywright uses Playwright, CompanyResearcher uses browser-use (for now)
+        self.browser = self.session_manager.get_browser(headless=False)  # For CompanyResearcher
+        self.playwright_browser = None  # Will be initialized async
         
-        self.job_scraper = JobScraper(model=model, browser=self.browser)
+        # Use Playwright scraper instead of browser-use scraper
+        self.job_scraper = JobScraperPlaywright(model=model, playwright_browser=None)  # Will set playwright_browser async
         self.company_researcher = CompanyResearcher(model=model, browser=self.browser)
         self.message_generator = MessageGenerator(model=model)
+    
+    async def _ensure_playwright_browser(self):
+        """Ensure Playwright browser is initialized"""
+        if not self.playwright_browser:
+            self.playwright_browser = await self.session_manager.get_playwright_browser(headless=False)
+            self.job_scraper.playwright_browser = self.playwright_browser
     
     async def scrape_jobs(
         self,
