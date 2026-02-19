@@ -39,7 +39,7 @@ class Database:
     async def disconnect(self):
         """Disconnect from MongoDB"""
         if self.client:
-            self.client.close()
+            await self.client.close()
             logger.info("Disconnected from MongoDB")
     
     async def _create_indexes(self):

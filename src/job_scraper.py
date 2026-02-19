@@ -13,6 +13,18 @@ from src.utils.logger import logger
 
 load_dotenv()
 
+# Initialize Laminar for observability (optional - only if API key is set)
+lmnr_api_key = os.getenv('LMNR_PROJECT_API_KEY')
+if lmnr_api_key:
+    try:
+        from lmnr import Laminar
+        Laminar.initialize(project_api_key=lmnr_api_key)
+        logger.info("Laminar observability initialized")
+    except ImportError:
+        logger.warning("Laminar not installed. Install with: pip install lmnr")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Laminar: {e}")
+
 
 class JobScraper:
     """Scrape LinkedIn jobs using browser-use"""
@@ -56,7 +68,7 @@ class JobScraper:
         location: Optional[str] = None,
         experience_level: Optional[str] = None,
         job_type: Optional[str] = None,
-        max_results: int = 50
+        max_results: int = 10
     ) -> List[JobListing]:
         """
         Args:
@@ -80,23 +92,36 @@ class JobScraper:
         linkdin_password = os.getenv('LINKDIN_PASSWORD')
         # Build task prompt
         task_prompt = f"""
+        step 1:
         Goto link: https://www.linkedin.com/
-        click the "sign in with email" button then when we see the login form
-        enter and login with these creds: 
-            - email: {linkdin_email}
-            - password: {linkdin_password}
 
-        Navigate to LinkedIn Jobs and search for: {search_query}
-        
+        step 2:
+        check if user is already loggedin if not u will see a screen with button "sign in with email"
+        if not logged in then:
+            click the "sign in with email" button then when we see the login form
+            enter and login with these creds: 
+                - email: {linkdin_email}
+                - password: {linkdin_password}
+
+        else if logged in continue
+        Navigate to LinkedIn Jobs at: https://www.linkedin.com/jobs in the same tab 
+
+        step 3:
+        wait for page to load fully
+        check the component at top left section of the navbar and input for search query: {search_query}
+
+        step 4:
+        wait for page to load fully
+        now the list loads check for element on the left, this is the list of jobs, 
+        this will have a scroll bar to scroll to all the jobs in this page
+
+        step 5:
+        wait for page to load fully
         Extract all job listings with the following details:
-        - Job title
-        - Company name
-        - Job URL (full LinkedIn URL)
+        - Job title (Required)
+        - Company name (Required)
         - Location
-        - Job description (summary or key details)
         - Posted date (if available)
-        - Required skills or experience level (if mentioned)
-        - Job type (Full-time, Contract, etc.)
         
         Scroll through the results to find at least {max_results} jobs.
         Extract as many jobs as possible from the search results.
@@ -114,14 +139,8 @@ class JobScraper:
         class JobListingSchema(BaseModel):
             title: str
             company: str
-            url: str
             location: Optional[str] = None
-            description: Optional[str] = None
-            posted_date: Optional[str] = None
-            skills: TypingList[str] = []
-            experience_level: Optional[str] = None
-            job_type: Optional[str] = None
-        
+            posted_date: Optional[str] = None        
         class JobListSchema(BaseModel):
             jobs: TypingList[JobListingSchema]
         
@@ -130,16 +149,65 @@ class JobScraper:
             if not browser:
                 browser = self.session_manager.get_browser(headless=False)
             
+            # Define observability hooks
+            async def on_step_start(agent: Agent):
+                """Hook executed at the start of each agent step"""
+                try:
+                    urls = agent.history.urls()
+                    actions = agent.history.model_actions()
+                    current_url = await agent.browser_session.get_current_page_url()
+                    
+                    logger.debug(f"Step {len(urls)} started - Current URL: {current_url}")
+                    if actions:
+                        logger.debug(f"Last action: {actions[-1]}")
+                except Exception as e:
+                    logger.debug(f"Error in on_step_start hook: {e}")
+            
+            async def on_step_end(agent: Agent):
+                """Hook executed at the end of each agent step"""
+                try:
+                    actions = agent.history.model_actions()
+                    extracted = agent.history.extracted_content()
+                    thoughts = agent.history.model_thoughts()
+                    
+                    logger.debug(f"Step ended - Actions: {len(actions)}, Extracted items: {len(extracted)}")
+                    if thoughts:
+                        logger.debug(f"Agent thoughts: {thoughts[-1][:100]}..." if len(thoughts[-1]) > 100 else f"Agent thoughts: {thoughts[-1]}")
+                except Exception as e:
+                    logger.debug(f"Error in on_step_end hook: {e}")
+            
             agent = Agent(
                 task=task_prompt,
                 llm=self.llm,
                 browser=browser,
                 use_vision=False,
+                calculate_cost=True,  # Enable cost tracking
+                output_model_schema=JobListSchema
             )
             
-            # Run agent
+            # Run agent with observability hooks
             logger.info("Running browser-use agent to scrape jobs...")
-            history = await agent.run(max_steps=50)
+            history = await agent.run(
+                max_steps=50,
+                on_step_start=on_step_start,
+                on_step_end=on_step_end
+            )
+            
+            # Log final observability stats
+            try:
+                urls_visited = history.urls() if hasattr(history, 'urls') else []
+                actions_taken = history.model_actions() if hasattr(history, 'model_actions') else []
+                logger.info(f"Agent execution complete - URLs visited: {len(urls_visited)}, Actions taken: {len(actions_taken)}")
+                
+                # Log cost if available
+                if hasattr(agent, 'token_cost_service'):
+                    try:
+                        usage_summary = await agent.token_cost_service.get_usage_summary()
+                        logger.info(f"Token usage summary: {usage_summary}")
+                    except Exception as e:
+                        logger.debug(f"Could not get usage summary: {e}")
+            except Exception as e:
+                logger.debug(f"Error logging observability stats: {e}")
             
             # Extract structured output
             if hasattr(history, 'structured_output') and history.structured_output:
