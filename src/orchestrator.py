@@ -8,7 +8,6 @@ from src.database import Database
 from src.job_scraper import JobScraper
 from src.job_scraper_playwright import JobScraperPlaywright
 from src.company_researcher import CompanyResearcher
-from src.message_generator import MessageGenerator
 from src.session_manager import SessionManager
 from src.models import JobListing, CompanyResearch, GeneratedMessage, JobPipeline
 from src.utils.logger import logger
@@ -36,7 +35,6 @@ class Orchestrator:
         # Use Playwright scraper instead of browser-use scraper
         self.job_scraper = JobScraperPlaywright(model=model, browser=self.browser)  # Will set playwright_browser async
         self.company_researcher = CompanyResearcher(model=model, browser=self.browser, db=db)
-        self.message_generator = MessageGenerator(model=model)
     
     async def _ensure_playwright_browser(self):
         """Ensure Playwright browser is initialized"""
@@ -147,63 +145,6 @@ class Orchestrator:
             logger.error(f"Error researching company {job.company}: {e}")
             return None
     
-    async def generate_messages(
-        self,
-        jobs: Optional[List[JobListing]] = None,
-        job_ids: Optional[List[str]] = None
-    ) -> Dict[str, GeneratedMessage]:
-        """
-        Generate messages for jobs
-        
-        Args:
-            jobs: List of JobListing objects (optional)
-            job_ids: List of job IDs to generate messages for (optional)
-        
-        Returns:
-            Dictionary mapping job_id to GeneratedMessage
-        """
-        logger.info("Starting message generation phase...")
-        
-        # Get jobs if not provided
-        if not jobs:
-            if job_ids:
-                jobs = []
-                for job_id in job_ids:
-                    job = await self.db.get_job_by_id(job_id)
-                    if job:
-                        jobs.append(job)
-            else:
-                # Get jobs that have research but no message yet
-                jobs = await self.db.get_jobs({"status": "pending"}, limit=100)
-        
-        if not jobs:
-            logger.warning("No jobs found for message generation")
-            return {}
-        
-        logger.info(f"Generating messages for {len(jobs)} jobs...")
-        
-        message_results = {}
-        
-        for job in jobs:
-            try:
-                # Get research if available
-                research = await self.db.get_company_research(job.job_id)
-                
-                # Generate message
-                message = await self.message_generator.generate_message(job, research)
-                message_results[job.job_id] = message
-                
-                # Save to database
-                await self.db.save_message(job.job_id, message)
-                
-                # Update job status
-                await self.db.update_job_status(job.job_id, "message_generated")
-                
-            except Exception as e:
-                logger.error(f"Error generating message for job {job.job_id}: {e}")
-        
-        logger.info(f"Generated {len(message_results)} messages")
-        return message_results
     
     async def run_full_pipeline(
         self,
@@ -248,38 +189,3 @@ class Orchestrator:
             return []
         logger.info(jobs)
         return []
-
-        # Phase 2: Research companies
-        research_results = {}
-        if not skip_research:
-            research_results = await self.research_companies(jobs=jobs)
-        else:
-            logger.info("Skipping company research phase")
-        
-        # Phase 3: Generate messages
-        message_results = {}
-        if not skip_messages:
-            message_results = await self.generate_messages(jobs=jobs)
-        else:
-            logger.info("Skipping message generation phase")
-        
-        # Build pipeline results
-        pipelines = []
-        for job in jobs:
-            research = research_results.get(job.job_id)
-            message = message_results.get(job.job_id)
-            pipelines.append(JobPipeline(job=job, research=research, message=message))
-        
-        logger.info("=" * 60)
-        logger.info(f"Pipeline completed. Processed {len(pipelines)} jobs")
-        logger.info("=" * 60)
-        
-        return pipelines
-    
-    async def get_pipelines(
-        self,
-        filters: Optional[Dict[str, Any]] = None,
-        limit: int = 100
-    ) -> List[JobPipeline]:
-        """Get pipelines from database"""
-        return await self.db.get_all_pipelines(filters=filters, limit=limit)
