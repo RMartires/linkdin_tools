@@ -39,10 +39,13 @@ class SessionManager:
             project_root = Path(__file__).parent.parent
             user_data_dir = str(project_root / '.browser_data')
         
-        self.user_data_dir = user_data_dir
+        self.user_data_dir = str(Path(user_data_dir).expanduser().resolve())
+        self.profile_directory = os.getenv('BROWSER_PROFILE_DIRECTORY')  # e.g. "Profile 1", "Default"
         self._playwright = None
         self._playwright_browser = None
-        logger.info(f"Using persistent browser context: {self.user_data_dir}")
+        logger.info(f"Using persistent browser context: {self.user_data_dir}" + (
+            f" (profile: {self.profile_directory})" if self.profile_directory else ""
+        ))
     
     def get_browser(self, headless: bool = False):
         """
@@ -60,11 +63,15 @@ class SessionManager:
         
         try:
             # Create browser with persistent user data directory
-            # This will save cookies, localStorage, and session data
-            browser = Browser(
-                headless=headless,
-                user_data_dir=self.user_data_dir,
-            )
+            # Use channel="chrome" to use installed Chrome (with logged-in accounts)
+            browser_kwargs = {
+                "headless": headless,
+                "user_data_dir": self.user_data_dir,
+                "channel": "chrome",
+            }
+            if self.profile_directory:
+                browser_kwargs["profile_directory"] = self.profile_directory
+            browser = Browser(**browser_kwargs)
             logger.info(f"Created browser-use browser with persistent context at: {self.user_data_dir}")
             return browser
         except Exception as e:
@@ -91,12 +98,17 @@ class SessionManager:
         
         if self._playwright_browser is None:
             # Launch browser with persistent context
+            # Use channel="chrome" to use installed Chrome (with logged-in accounts)
+            launch_args = ['--disable-blink-features=AutomationControlled']
+            if self.profile_directory:
+                launch_args.append(f'--profile-directory={self.profile_directory}')
             self._playwright_browser = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=self.user_data_dir,
+                channel="chrome",
                 headless=headless,
                 viewport={'width': 1920, 'height': 1080},
                 user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                args=['--disable-blink-features=AutomationControlled']
+                args=launch_args
             )
             logger.info(f"Created Playwright browser with persistent context at: {self.user_data_dir}")
         
