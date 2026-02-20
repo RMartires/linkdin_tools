@@ -37,7 +37,41 @@ class DraftGenerator:
             self.resume_path = Path(resume_path)
         else:
             project_root = Path(__file__).parent.parent
-            self.resume_path = project_root / 'resumes/rohit_martires_cv.pdf'
+            self.resume_path = project_root / 'resumes/rohit_martires_resume_.pdf'
+        
+        # Load golden drafts
+        project_root = Path(__file__).parent.parent
+        self.golden_drafts_dir = project_root / 'golden_drafts'
+        self._load_golden_drafts()
+    
+    def _load_golden_drafts(self):
+        """Load golden draft templates and examples"""
+        try:
+            # Load cold email soul (system message)
+            soul_path = self.golden_drafts_dir / 'cold_email_soul.md'
+            if soul_path.exists():
+                with open(soul_path, 'r', encoding='utf-8') as f:
+                    self.cold_email_soul = f.read().strip()
+                logger.info("Loaded cold_email_soul.md")
+            else:
+                logger.warning(f"cold_email_soul.md not found at {soul_path}")
+                self.cold_email_soul = None
+            
+            # Load examples
+            self.examples = []
+            example_files = ['example_1.md', 'example_2.md']
+            for example_file in example_files:
+                example_path = self.golden_drafts_dir / example_file
+                if example_path.exists():
+                    with open(example_path, 'r', encoding='utf-8') as f:
+                        self.examples.append(f.read().strip())
+                    logger.info(f"Loaded {example_file}")
+                else:
+                    logger.warning(f"{example_file} not found at {example_path}")
+        except Exception as e:
+            logger.error(f"Error loading golden drafts: {e}")
+            self.cold_email_soul = None
+            self.examples = []
     
     def _read_resume_pdf(self) -> Optional[str]:
         """Read resume PDF and extract text
@@ -80,8 +114,8 @@ class DraftGenerator:
             logger.error(f"Error reading resume PDF: {e}")
             return None
     
-    def _build_prompt(self, job: JobListing, research: CompanyResearch, resume_text: str) -> str:
-        """Build the prompt for generating cover email
+    def _build_messages(self, job: JobListing, research: CompanyResearch, resume_text: str) -> List[dict]:
+        """Build structured messages for OpenAI API with system message, user message, and examples
         
         Args:
             job: JobListing object
@@ -89,8 +123,25 @@ class DraftGenerator:
             resume_text: Resume text content
         
         Returns:
-            Formatted prompt string
+            List of message dictionaries for OpenAI API
         """
+        messages = []
+        
+        # System message: Use cold_email_soul.md
+        if self.cold_email_soul:
+            # Replace [Company Name] placeholder with actual company name
+            system_content = self.cold_email_soul.replace("[Company Name]", research.company_name)
+            messages.append({
+                "role": "system",
+                "content": system_content
+            })
+        else:
+            # Fallback if soul file not found
+            messages.append({
+                "role": "system",
+                "content": "You are an elite software engineer applying for an engineering role. Write a compelling cold email."
+            })
+        
         # Collect available summaries
         summaries = []
         if research.linkedin_page_summary:
@@ -103,13 +154,16 @@ class DraftGenerator:
         company_info = "\n".join(summaries)
         
         # Build job details
-        job_details = f"""
-Job Title: {job.title}
+        job_details = f"""Job Title: {job.title}
 Company: {job.company}
 Location: {job.location or 'Not specified'}
-"""
+Job URL: {job.url}"""
+        
+        if job.description:
+            job_details += f"\n\nJob Description:\n{job.description}"
                 
-        prompt = f"""You are a professional email writer helping me draft a compelling cover email to apply for a job.
+        # User message: Company research context
+        user_content = f"""Write a cold email to apply for this job:
 
 JOB DETAILS:
 {job_details}
@@ -120,25 +174,24 @@ COMPANY RESEARCH:
 MY RESUME:
 {resume_text}
 
-TASK:
-Write a professional, personalized cover email that:
-1. Shows genuine interest in the role and company
-2. Highlights relevant experience from my resume that matches the job requirements
-3. References specific details about the company from the research provided
-4. Demonstrates understanding of the company's values, mission, or culture
-5. Is concise (2-3 paragraphs) but impactful
-6. Has a professional but warm tone
-7. Includes a clear call to action
-
 The email should be ready to send - include a subject line and the email body. Format it as:
 
 Subject: [Your subject line]
 
-[Email body]
-
-Make it personal and compelling, showing that I've done my research about the company and understand what they're looking for."""
+[Email body]"""
         
-        return prompt
+        # Add examples if available
+        if self.examples:
+            user_content += "\n\nEXAMPLES OF SIMILAR EMAILS:\n\n"
+            for i, example in enumerate(self.examples, 1):
+                user_content += f"Example {i}:\n{example}\n\n"
+        
+        messages.append({
+            "role": "user",
+            "content": user_content
+        })
+        
+        return messages
     
     async def generate_draft(self, job: JobListing, research: CompanyResearch) -> Optional[GeneratedMessage]:
         """Generate a cover email draft for a job
@@ -161,21 +214,16 @@ Make it personal and compelling, showing that I've done my research about the co
             logger.error("Could not read resume PDF. Cannot generate draft without resume.")
             return None
         
-        # Build prompt
-        prompt = self._build_prompt(job, research, resume_text)
+        # Build structured messages
+        messages = self._build_messages(job, research, resume_text)
         
         try:
             logger.info(f"Generating cover email draft for job: {job.title} at {job.company}")
             
-            # Call OpenRouter API
+            # Call OpenRouter API with structured messages
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+                messages=messages,
                 temperature=0.7,
             )
             
