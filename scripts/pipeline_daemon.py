@@ -184,9 +184,13 @@ class PipelineDaemon:
                 name='Enrich Companies',
                 replace_existing=True
             )
-            schedule_desc = f"every hour at :{enricher_schedule.get('minute', 0):02d}"
-            if "hour" in enricher_schedule:
-                schedule_desc = f"at {enricher_schedule['hour']:02d}:{enricher_schedule.get('minute', 0):02d}"
+            minute_val = enricher_schedule.get('minute', 0)
+            if isinstance(minute_val, str):
+                schedule_desc = f"every hour (minute={minute_val})"
+            elif "hour" in enricher_schedule:
+                schedule_desc = f"at {enricher_schedule['hour']:02d}:{minute_val:02d}"
+            else:
+                schedule_desc = f"every hour at :{minute_val:02d}"
             logger.info(f"Scheduled enricher: {schedule_desc}")
         
         # Generator schedule
@@ -202,9 +206,13 @@ class PipelineDaemon:
                 name='Generate Drafts',
                 replace_existing=True
             )
-            schedule_desc = f"every hour at :{generator_schedule.get('minute', 30):02d}"
-            if "hour" in generator_schedule:
-                schedule_desc = f"at {generator_schedule['hour']:02d}:{generator_schedule.get('minute', 30):02d}"
+            minute_val = generator_schedule.get('minute', 30)
+            if isinstance(minute_val, str):
+                schedule_desc = f"every hour (minute={minute_val})"
+            elif "hour" in generator_schedule:
+                schedule_desc = f"at {generator_schedule['hour']:02d}:{minute_val:02d}"
+            else:
+                schedule_desc = f"every hour at :{minute_val:02d}"
             logger.info(f"Scheduled generator: {schedule_desc}")
     
     def signal_handler(self, signum, frame):

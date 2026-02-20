@@ -4,16 +4,16 @@
 scraper:
   # Schedule: Daily at 9:00 AM
   schedule:
-    hour: 9
-    minute: 0
-  max_jobs_per_day: 50
+    hour: 21
+    minute: 24
+  max_jobs_per_day: 10
   enabled: true
 
 # Company Enricher Configuration
 enricher:
   # Schedule: Every hour at :00 (top of the hour)
   schedule:
-    minute: 0
+    minute: "*/5"
   max_retries: 3
   batch_size: 10
   enabled: true
@@ -22,7 +22,7 @@ enricher:
 generator:
   # Schedule: Every hour at :30 (30 minutes past the hour)
   schedule:
-    minute: 30
+    minute: "*/5"
   max_retries: 3
   batch_size: 10
   enabled: true
