@@ -73,13 +73,24 @@ class Database:
         saved_count = 0
         for job in job_listings:
             try:
+                # Convert to dict and serialize HttpUrl to string for MongoDB compatibility
                 job_dict = job.model_dump(exclude_none=True)
                 job_dict["updated_at"] = datetime.utcnow()
+                
+                # Convert HttpUrl to string (MongoDB can't serialize Pydantic HttpUrl objects)
+                if 'url' in job_dict:
+                    job_dict['url'] = str(job_dict['url'])
+                
+                # Remove created_at from job_dict to avoid conflict with $setOnInsert
+                # created_at should only be set on insert, not on update
+                created_at_value = job_dict.pop('created_at', None)
+                if created_at_value is None:
+                    created_at_value = datetime.utcnow()
                 
                 # Try to update existing job, or insert if new
                 result = await self.db.jobs.update_one(
                     {"job_id": job.job_id},
-                    {"$set": job_dict, "$setOnInsert": {"created_at": datetime.utcnow()}},
+                    {"$set": job_dict, "$setOnInsert": {"created_at": created_at_value}},
                     upsert=True
                 )
                 if result.upserted_id or result.modified_count > 0:
@@ -124,6 +135,11 @@ class Database:
             research_dict = research.model_dump(exclude_none=True)
             research_dict["job_id"] = job_id
             research_dict["created_at"] = datetime.utcnow()
+            
+            # Convert HttpUrl fields to strings (MongoDB can't serialize Pydantic HttpUrl objects)
+            for field in ['website', 'linkedin_url']:
+                if field in research_dict and research_dict[field]:
+                    research_dict[field] = str(research_dict[field])
             
             await self.db.company_research.update_one(
                 {"job_id": job_id},
