@@ -1,0 +1,34 @@
+# Pipeline Daemon Configuration
+
+# Job Scraper Configuration
+scraper:
+  # Schedule: Daily at 9:00 AM
+  schedule:
+    hour: 9
+    minute: 0
+  max_jobs_per_day: 50
+  enabled: true
+
+# Company Enricher Configuration
+enricher:
+  # Schedule: Every hour at :00 (top of the hour)
+  schedule:
+    minute: 0
+  max_retries: 3
+  batch_size: 10
+  enabled: true
+
+# Draft Generator Configuration
+generator:
+  # Schedule: Every hour at :30 (30 minutes past the hour)
+  schedule:
+    minute: 30
+  max_retries: 3
+  batch_size: 10
+  enabled: true
+
+# Daemon Configuration
+daemon:
+  log_file: "logs/pipeline.log"
+  pid_file: ".pipeline.pid"
+  log_level: "INFO"

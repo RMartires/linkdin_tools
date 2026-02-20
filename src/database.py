@@ -211,6 +211,123 @@ class Database:
             messages.append(GeneratedMessage(**doc))
         return messages
     
+    # Pipeline stage queries
+    async def get_jobs_for_enrichment(self, limit: int = 10, max_retries: int = 3) -> List[JobListing]:
+        """Get jobs ready for enrichment (status='scraped' and retry_count < max_retries)"""
+        cursor = self.db.jobs.find({
+            "status": "scraped",
+            "enrich_retry_count": {"$lt": max_retries}
+        }).limit(limit)
+        jobs = []
+        async for doc in cursor:
+            doc.pop("_id", None)
+            jobs.append(JobListing(**doc))
+        return jobs
+    
+    async def get_jobs_for_generation(self, limit: int = 10, max_retries: int = 3) -> List[JobListing]:
+        """Get jobs ready for draft generation (status='enriched' and retry_count < max_retries)"""
+        cursor = self.db.jobs.find({
+            "status": "enriched",
+            "generate_retry_count": {"$lt": max_retries}
+        }).limit(limit)
+        jobs = []
+        async for doc in cursor:
+            doc.pop("_id", None)
+            jobs.append(JobListing(**doc))
+        return jobs
+    
+    async def increment_enrich_retry(self, job_id: str, error: str) -> bool:
+        """Increment enrichment retry count and update error"""
+        result = await self.db.jobs.update_one(
+            {"job_id": job_id},
+            {
+                "$inc": {"enrich_retry_count": 1},
+                "$set": {
+                    "enrich_last_attempt": datetime.utcnow(),
+                    "enrich_error": error,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        return result.modified_count > 0
+    
+    async def increment_generate_retry(self, job_id: str, error: str) -> bool:
+        """Increment generation retry count and update error"""
+        result = await self.db.jobs.update_one(
+            {"job_id": job_id},
+            {
+                "$inc": {"generate_retry_count": 1},
+                "$set": {
+                    "generate_last_attempt": datetime.utcnow(),
+                    "generate_error": error,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        return result.modified_count > 0
+    
+    async def clear_enrich_retry_counters(self, job_id: str) -> bool:
+        """Clear enrichment retry counters on success"""
+        result = await self.db.jobs.update_one(
+            {"job_id": job_id},
+            {
+                "$set": {
+                    "enrich_retry_count": 0,
+                    "enrich_error": None,
+                    "enriched_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        return result.modified_count > 0
+    
+    async def clear_generate_retry_counters(self, job_id: str) -> bool:
+        """Clear generation retry counters on success"""
+        result = await self.db.jobs.update_one(
+            {"job_id": job_id},
+            {
+                "$set": {
+                    "generate_retry_count": 0,
+                    "generate_error": None,
+                    "draft_generated_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        return result.modified_count > 0
+    
+    async def mark_job_failed(self, job_id: str, stage: str, error: str) -> bool:
+        """Mark job as failed after max retries"""
+        update_fields = {
+            "status": "failed",
+            "updated_at": datetime.utcnow()
+        }
+        
+        if stage == "enrich":
+            update_fields["enrich_error"] = error
+        elif stage == "generate":
+            update_fields["generate_error"] = error
+        
+        result = await self.db.jobs.update_one(
+            {"job_id": job_id},
+            {"$set": update_fields}
+        )
+        return result.modified_count > 0
+    
+    async def mark_job_scraped(self, job_id: str) -> bool:
+        """Mark job as scraped"""
+        result = await self.db.jobs.update_one(
+            {"job_id": job_id},
+            {
+                "$set": {
+                    "status": "scraped",
+                    "scraped_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        return result.modified_count > 0
+    
     # Pipeline operations
     async def get_job_pipeline(self, job_id: str) -> Optional[JobPipeline]:
         """Get complete pipeline (job + research + message)"""

@@ -18,9 +18,24 @@ class JobListing(BaseModel):
     skills: Optional[List[str]] = Field(default_factory=list, description="Required skills")
     experience_level: Optional[str] = Field(None, description="Experience level (e.g., Entry, Mid, Senior)")
     job_type: Optional[str] = Field(None, description="Job type (e.g., Full-time, Contract)")
-    status: str = Field(default="pending", description="Processing status")
+    status: str = Field(default="pending", description="Processing status: pending, scraped, enriching, enriched, generating, draft_generated, failed")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Pipeline stage timestamps
+    scraped_at: Optional[datetime] = Field(None, description="When job was scraped")
+    enriched_at: Optional[datetime] = Field(None, description="When company was enriched")
+    draft_generated_at: Optional[datetime] = Field(None, description="When draft was generated")
+    
+    # Retry tracking for enrichment stage
+    enrich_retry_count: int = Field(default=0, description="Number of enrichment retry attempts")
+    enrich_last_attempt: Optional[datetime] = Field(None, description="Last enrichment attempt timestamp")
+    enrich_error: Optional[str] = Field(None, description="Last enrichment error message")
+    
+    # Retry tracking for generation stage
+    generate_retry_count: int = Field(default=0, description="Number of generation retry attempts")
+    generate_last_attempt: Optional[datetime] = Field(None, description="Last generation attempt timestamp")
+    generate_error: Optional[str] = Field(None, description="Last generation error message")
 
     class Config:
         json_encoders = {
