@@ -11,6 +11,7 @@ class JobListing(BaseModel):
     title: str = Field(..., description="Job title")
     company: str = Field(..., description="Company name")
     url: HttpUrl = Field(..., description="Job posting URL")
+    company_url: Optional[HttpUrl] = Field(None, description="LinkedIn company page URL")
     location: Optional[str] = Field(None, description="Job location")
     description: Optional[str] = Field(None, description="Job description")
     posted_date: Optional[datetime] = Field(None, description="Date job was posted")

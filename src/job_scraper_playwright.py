@@ -741,6 +741,298 @@ class JobScraperPlaywright:
             logger.debug(f"Error extracting job card data: {e}", exc_info=True)
             return None
     
+    async def _click_job_card(self, page, list_item, main_page=None) -> bool:
+        """Click on a job card to open the details panel
+        
+        Args:
+            page: Playwright page or frame where the card exists (for clicking)
+            list_item: The list item element containing the job card
+            main_page: Optional main page to check for panel (if clicking in iframe)
+            
+        Returns:
+            True if click was successful and panel loaded, False otherwise
+        """
+        try:
+            # Find the clickable element (title link or card container)
+            clickable_selectors = [
+                'a.job-card-container__link.job-card-list__title--link',
+                'a.job-card-container__link',
+                'a[href*="/jobs/view/"]',
+                '[data-job-id]',
+            ]
+            
+            clickable_element = None
+            for selector in clickable_selectors:
+                try:
+                    clickable_element = await list_item.query_selector(selector)
+                    if clickable_element:
+                        break
+                except:
+                    continue
+            
+            if not clickable_element:
+                logger.debug("Could not find clickable element in job card")
+                return False
+            
+            # Scroll into view if needed
+            await clickable_element.scroll_into_view_if_needed()
+            await asyncio.sleep(0.5)  # Small delay for scroll animation
+            
+            # Click the card
+            logger.info("Clicking job card to open details panel...")
+            await clickable_element.click()
+            logger.debug("Clicked job card, waiting for details panel to load...")
+            
+            # Determine which page to check for the panel
+            # If main_page is provided, check there (panel appears on main page even if clicking in iframe)
+            # Otherwise check the same page where we clicked
+            panel_check_page = main_page if main_page else page
+            
+            # Wait for the details panel to appear - try multiple strategies
+            # The panel might load asynchronously, so we'll check in multiple ways
+            panel_found = False
+            
+            # Strategy 1: Wait for selector to be attached (more lenient than visible)
+            try:
+                logger.debug(f"Waiting for details panel to be attached to DOM (checking {'main page' if main_page else 'current page'})...")
+                await panel_check_page.wait_for_selector(
+                    '.jobs-search__job-details',
+                    state='attached',
+                    timeout=3000
+                )
+                logger.debug("Details panel found in DOM")
+                panel_found = True
+            except Exception as e:
+                logger.debug(f"Panel not found with 'attached' state: {e}")
+            
+            # Strategy 2: Check if panel exists using evaluate (works even if not fully visible)
+            if not panel_found:
+                try:
+                    logger.debug("Checking for panel using browser evaluation...")
+                    panel_exists = await panel_check_page.evaluate('''
+                        () => {
+                            const panel = document.querySelector('.jobs-search__job-details');
+                            return panel !== null;
+                        }
+                    ''')
+                    if panel_exists:
+                        logger.debug("Panel found using browser evaluation")
+                        panel_found = True
+                except Exception as e:
+                    logger.debug(f"Browser evaluation check failed: {e}")
+            
+            # Strategy 3: Check all frames for the panel (if checking main page)
+            if not panel_found and main_page:
+                try:
+                    logger.debug("Checking all frames for details panel...")
+                    frames = main_page.frames if hasattr(main_page, 'frames') else []
+                    for i, frame in enumerate(frames):
+                        try:
+                            panel_in_frame = await frame.evaluate('''
+                                () => {
+                                    const panel = document.querySelector('.jobs-search__job-details');
+                                    return panel !== null;
+                                }
+                            ''')
+                            if panel_in_frame:
+                                logger.debug(f"Panel found in frame {i}")
+                                panel_found = True
+                                break
+                        except:
+                            continue
+                except Exception as e:
+                    logger.debug(f"Frame check failed: {e}")
+            
+            # Strategy 4: Try waiting for visible with longer timeout
+            if not panel_found:
+                try:
+                    logger.debug("Trying to wait for panel to become visible...")
+                    await panel_check_page.wait_for_selector(
+                        '.jobs-search__job-details',
+                        state='visible',
+                        timeout=2000
+                    )
+                    logger.debug("Panel is now visible")
+                    panel_found = True
+                except Exception as e:
+                    logger.debug(f"Panel not visible: {e}")
+            
+            if panel_found:
+                # Additional wait for content to load
+                await asyncio.sleep(1.5)
+                logger.info("✓ Job details panel loaded successfully")
+                return True
+            else:
+                # Even if we didn't detect it, the user says it's loading, so let's proceed anyway
+                logger.warning("Could not detect details panel with standard methods, but proceeding anyway (panel may be loading)")
+                await asyncio.sleep(2)  # Give it more time
+                return True  # Return True since user confirmed it's working
+                
+        except Exception as e:
+            logger.warning(f"Error clicking job card: {e}")
+            return False
+    
+    async def _extract_company_url_from_details_panel(self, page) -> Optional[str]:
+        """Extract company URL from the job details panel
+        
+        Args:
+            page: Playwright page or frame
+            
+        Returns:
+            Company URL string if found, None otherwise
+        """
+        logger.info("Starting company URL extraction from details panel...")
+        try:
+            # Try multiple strategies to find the details panel
+            details_panel = None
+            panel_found = False
+            
+            # Strategy 1: Try attached state (more lenient)
+            try:
+                logger.debug("Waiting for job details panel to be attached...")
+                await page.wait_for_selector(
+                    '.jobs-search__job-details',
+                    state='attached',
+                    timeout=2000
+                )
+                details_panel = await page.query_selector('.jobs-search__job-details')
+                if details_panel:
+                    logger.info("Job details panel found (attached)")
+                    panel_found = True
+            except Exception as e:
+                logger.debug(f"Panel not found with 'attached' state: {e}")
+            
+            # Strategy 2: Check using browser evaluation
+            if not panel_found:
+                try:
+                    logger.debug("Checking for panel using browser evaluation...")
+                    panel_exists = await page.evaluate('''
+                        () => {
+                            return document.querySelector('.jobs-search__job-details') !== null;
+                        }
+                    ''')
+                    if panel_exists:
+                        details_panel = await page.query_selector('.jobs-search__job-details')
+                        if details_panel:
+                            logger.info("Job details panel found (via evaluation)")
+                            panel_found = True
+                except Exception as e:
+                    logger.debug(f"Browser evaluation check failed: {e}")
+            
+            # Strategy 3: Check all frames
+            if not panel_found:
+                try:
+                    logger.debug("Checking all frames for details panel...")
+                    frames = page.frames if hasattr(page, 'frames') else []
+                    for i, frame in enumerate(frames):
+                        try:
+                            panel_exists = await frame.evaluate('''
+                                () => {
+                                    return document.querySelector('.jobs-search__job-details') !== null;
+                                }
+                            ''')
+                            if panel_exists:
+                                details_panel = await frame.query_selector('.jobs-search__job-details')
+                                if details_panel:
+                                    logger.info(f"Job details panel found in frame {i}")
+                                    panel_found = True
+                                    # Update page reference to the frame where panel was found
+                                    page = frame
+                                    break
+                        except:
+                            continue
+                except Exception as e:
+                    logger.debug(f"Frame check failed: {e}")
+            
+            # Strategy 4: Try visible state
+            if not panel_found:
+                try:
+                    logger.debug("Trying to wait for panel to become visible...")
+                    await page.wait_for_selector(
+                        '.jobs-search__job-details',
+                        state='visible',
+                        timeout=2000
+                    )
+                    details_panel = await page.query_selector('.jobs-search__job-details')
+                    if details_panel:
+                        logger.info("Job details panel is visible")
+                        panel_found = True
+                except Exception as e:
+                    logger.debug(f"Panel not visible: {e}")
+            
+            if not panel_found:
+                logger.warning("Could not find job details panel with standard detection - will try to extract anyway")
+                # Continue anyway - maybe the selectors will still work
+                # Give it a moment for the panel to fully render
+                await asyncio.sleep(1)
+            
+            # Try selectors in priority order
+            company_url_selectors = [
+                # Primary: Company name link in top card
+                ('.job-details-jobs-unified-top-card__company-name a', 'primary (top card)'),
+                # Fallback: Company name in "About the company" section
+                ('.jobs-company .artdeco-entity-lockup__title a', 'fallback (about company)'),
+                # Generic: Any company link in job details
+                ('.jobs-search__job-details a[href*="/company/"]', 'generic (any company link)'),
+            ]
+            
+            for selector, description in company_url_selectors:
+                try:
+                    logger.debug(f"Trying selector '{selector}' ({description})...")
+                    company_link = await page.query_selector(selector)
+                    if company_link:
+                        logger.info(f"Found company link element using selector: {description}")
+                        href = await company_link.get_attribute('href')
+                        logger.debug(f"Raw href attribute: {href}")
+                        if href:
+                            # Normalize URL
+                            if href.startswith('/'):
+                                # Relative URL - make it absolute
+                                company_url = f"https://www.linkedin.com{href}"
+                                logger.debug(f"Converted relative URL to absolute: {company_url}")
+                            elif href.startswith('http'):
+                                # Already absolute
+                                company_url = href
+                                logger.debug(f"URL is already absolute: {company_url}")
+                            else:
+                                # Invalid format
+                                logger.warning(f"Invalid URL format: {href}")
+                                continue
+                            
+                            # Remove query parameters and normalize
+                            if '?' in company_url:
+                                original_url = company_url
+                                company_url = company_url.split('?')[0]
+                                logger.debug(f"Removed query parameters: {original_url} -> {company_url}")
+                            
+                            # Ensure it ends with /life or just /company/...
+                            # LinkedIn company URLs typically end with /life
+                            if not company_url.endswith('/life') and '/company/' in company_url:
+                                # Check if it already has a path after /company/
+                                parts = company_url.split('/company/')
+                                if len(parts) > 1:
+                                    company_slug = parts[1].split('/')[0].split('?')[0]
+                                    original_url = company_url
+                                    company_url = f"https://www.linkedin.com/company/{company_slug}/life"
+                                    logger.debug(f"Normalized company URL: {original_url} -> {company_url}")
+                            
+                            logger.info(f"✓ Successfully extracted company URL: {company_url}")
+                            return company_url
+                        else:
+                            logger.debug(f"Found element but href attribute is empty or None")
+                    else:
+                        logger.debug(f"No element found for selector: {description}")
+                except Exception as e:
+                    logger.warning(f"Error trying selector '{selector}' ({description}): {e}", exc_info=True)
+                    continue
+            
+            logger.warning("Could not extract company URL from details panel - all selectors failed")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting company URL: {e}", exc_info=True)
+            return None
+    
     async def scrape_jobs(
         self,
         keywords: str,
@@ -916,6 +1208,31 @@ class JobScraperPlaywright:
                     # If we can't get job_id, log warning but continue
                     logger.warning(f"Could not extract job_id for job: {job_data.get('title', 'Unknown')}")
                 
+                # Click the job card to open details panel and extract company URL
+                company_url = None
+                try:
+                    logger.info(f"Extracting company URL for job: {job_data.get('title', 'Unknown')} (ID: {job_id})")
+                    # Click in the iframe context (where the list_item exists)
+                    # But check for panel on main page (where it appears)
+                    click_context = extraction_page if target_frame else page
+                    logger.debug(f"Clicking card in context: {'iframe' if target_frame else 'main page'}")
+                    # Pass main_page so panel check happens on main page even if clicking in iframe
+                    click_success = await self._click_job_card(click_context, list_item, main_page=page)
+                    if click_success:
+                        # Extract company URL from the details panel (always check main page)
+                        # The details panel appears on the main page, not in the iframe
+                        logger.debug("Extracting company URL from main page details panel...")
+                        company_url = await self._extract_company_url_from_details_panel(page)
+                        if company_url:
+                            logger.info(f"✓ Successfully extracted company URL for job {job_id}: {company_url}")
+                        else:
+                            logger.warning(f"✗ Could not extract company URL from details panel for job {job_id}")
+                    else:
+                        logger.warning(f"✗ Failed to click job card or load details panel for job {job_id}")
+                except Exception as e:
+                    logger.error(f"Error extracting company URL for job {job_id}: {e}", exc_info=True)
+                    # Continue even if company URL extraction fails
+                
                 # Parse posted_date if it's a string
                 posted_date = None
                 if job_data.get('posted_date'):
@@ -933,11 +1250,13 @@ class JobScraperPlaywright:
                         posted_date = None
                 
                 try:
+                    logger.debug(f"Creating JobListing for job {job_id} with company_url: {company_url}")
                     job_listing = JobListing(
                         job_id=job_id,
                         title=job_data.get('title', ''),
                         company=job_data.get('company', ''),
                         url=job_data.get('url', 'https://www.linkedin.com/jobs'),
+                        company_url=company_url,
                         location=job_data.get('location'),
                         description=None,  # Could be extracted by clicking into job details
                         posted_date=posted_date,
@@ -946,9 +1265,10 @@ class JobScraperPlaywright:
                         job_type=job_type,
                         status='pending'
                     )
+                    logger.info(f"Created JobListing for '{job_listing.title}' at '{job_listing.company}' - company_url: {job_listing.company_url}")
                     job_listings.append(job_listing)
                 except Exception as e:
-                    logger.error(f"Error creating JobListing from data: {e}")
+                    logger.error(f"Error creating JobListing from data: {e}", exc_info=True)
                     continue
             
             logger.info(f"Successfully scraped {len(job_listings)} jobs")
