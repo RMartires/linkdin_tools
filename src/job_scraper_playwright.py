@@ -74,42 +74,121 @@ class JobScraperPlaywright:
         await asyncio.sleep(5)  # Wait for page to fully load
         logger.info("Successfully navigated to LinkedIn Jobs page")
     
-    async def _search_jobs(self, page, search_query: str):
-        """Enter search query in LinkedIn Jobs search"""
-        logger.info(f"Searching for jobs with query: {search_query}")
-        
-        # Multiple selector strategies for search input
-        search_selectors = [
-            'input[placeholder*="Search jobs"]',
-            'input[aria-label*="Search"]',
-            'input.jobs-search-box__input',
-            'input[data-test-id="jobs-search-box-keywords"]',
-            'input[type="text"][placeholder*="Search"]'
+    async def _find_title_input(self, page):
+        """Find the title/keywords search input field"""
+        # Priority order: most specific to least specific
+        title_selectors = [
+            'input[componentkey="jobSearchBox"]',
+            'input[placeholder*="Title, skill or Company"]',
+            'input[placeholder*="Title"]',
+            'input[data-testid="typeahead-input"][placeholder*="Title"]',
         ]
         
-        search_input = None
-        for selector in search_selectors:
+        for selector in title_selectors:
             try:
-                search_input = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                if search_input:
-                    logger.debug(f"Found search input using selector: {selector}")
-                    break
+                title_input = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                if title_input:
+                    # Verify it's the title field by checking placeholder
+                    placeholder = await title_input.get_attribute('placeholder') or ''
+                    if 'Title' in placeholder or 'skill' in placeholder.lower() or 'Company' in placeholder:
+                        logger.debug(f"Found title input using selector: {selector}")
+                        return title_input
             except:
                 continue
         
-        if not search_input:
-            raise Exception("Could not find LinkedIn job search input field")
+        # Fallback: find all typeahead inputs and identify by placeholder
+        try:
+            all_inputs = await page.query_selector_all('input[data-testid="typeahead-input"]')
+            for input_elem in all_inputs:
+                placeholder = await input_elem.get_attribute('placeholder') or ''
+                if 'Title' in placeholder or 'skill' in placeholder.lower() or 'Company' in placeholder:
+                    logger.debug("Found title input using fallback method")
+                    return input_elem
+        except:
+            pass
         
-        # Clear and type search query
-        await search_input.click()
-        await search_input.fill("")
-        await search_input.type(search_query, delay=50)  # Type with delay to mimic human behavior
-        await asyncio.sleep(0.5)
+        return None
+    
+    async def _find_location_input(self, page):
+        """Find the location search input field"""
+        # Priority order: most specific to least specific
+        location_selectors = [
+            'input[placeholder*="City, state, or zip code"]',
+            'input[placeholder*="City"]',
+            'input[placeholder*="Location"]',
+            'input[data-testid="typeahead-input"][placeholder*="City"]',
+        ]
         
-        # Submit search (press Enter or click search button)
-        await search_input.press("Enter")
+        for selector in location_selectors:
+            try:
+                location_input = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                if location_input:
+                    # Verify it's the location field by checking placeholder
+                    placeholder = await location_input.get_attribute('placeholder') or ''
+                    if 'City' in placeholder or 'Location' in placeholder or 'zip' in placeholder.lower():
+                        logger.debug(f"Found location input using selector: {selector}")
+                        return location_input
+            except:
+                continue
+        
+        # Fallback: find all typeahead inputs and identify by placeholder
+        try:
+            all_inputs = await page.query_selector_all('input[data-testid="typeahead-input"]')
+            for input_elem in all_inputs:
+                placeholder = await input_elem.get_attribute('placeholder') or ''
+                if 'City' in placeholder or 'Location' in placeholder or 'zip' in placeholder.lower():
+                    logger.debug("Found location input using fallback method")
+                    return input_elem
+        except:
+            pass
+        
+        return None
+    
+    async def _search_jobs(self, page, keywords: str, location: Optional[str] = None):
+        """Enter search query in LinkedIn Jobs search using separate title and location fields"""
+        logger.info(f"Searching for jobs: keywords='{keywords}', location='{location}'")
+        
+        # Find and fill title/keywords field
+        title_input = await self._find_title_input(page)
+        if not title_input:
+            # Log available inputs for debugging
+            try:
+                all_inputs = await page.query_selector_all('input[data-testid="typeahead-input"]')
+                logger.error(f"Could not find title input. Found {len(all_inputs)} typeahead inputs:")
+                for i, inp in enumerate(all_inputs):
+                    placeholder = await inp.get_attribute('placeholder') or 'N/A'
+                    logger.error(f"  Input {i+1}: placeholder='{placeholder}'")
+            except:
+                pass
+            raise Exception("Could not find LinkedIn job title/keywords search input field")
+        
+        # Enter keywords in title field
+        await title_input.click()
+        await asyncio.sleep(0.3)  # Small delay for focus
+        await title_input.fill("")  # Clear any existing text
+        await title_input.type(keywords, delay=50)  # Type with delay to mimic human behavior
+        await asyncio.sleep(0.5)  # Wait for any autocomplete to appear
+        
+        # If location is provided, find and fill location field
+        if location:
+            location_input = await self._find_location_input(page)
+            if not location_input:
+                logger.warning(f"Could not find location input field. Continuing search without location filter.")
+            else:
+                # Enter location in location field
+                await location_input.click()
+                await asyncio.sleep(0.3)  # Small delay for focus
+                await location_input.fill("")  # Clear any existing text
+                await location_input.type(location, delay=50)
+                await asyncio.sleep(0.5)  # Wait for any autocomplete to appear
+                
+                # Submit search by pressing Enter on location field
+                await location_input.press("Enter")
+        else:
+            # Submit search by pressing Enter on title field
+            await title_input.press("Enter")
+        
         await asyncio.sleep(3)  # Wait for results to load
-        
         logger.info("Search submitted, waiting for results...")
     
     async def _apply_filters(self, page, experience_level: Optional[str] = None, job_type: Optional[str] = None):
@@ -392,11 +471,6 @@ class JobScraperPlaywright:
         """
         logger.info(f"Starting job scrape: keywords='{keywords}', location='{location}', max_results={max_results}")
         
-        # Build search query
-        search_query = keywords
-        if location:
-            search_query += f" in {location}"
-        
         try:
             # Get Playwright page
             page = await self._get_page(headless=False)
@@ -404,8 +478,8 @@ class JobScraperPlaywright:
             # Navigate to LinkedIn Jobs (assumes already logged in via cookies)
             await self._navigate_to_jobs_page(page)
             
-            # Perform search
-            await self._search_jobs(page, search_query)
+            # Perform search with separate title and location fields
+            await self._search_jobs(page, keywords=keywords, location=location)
             
             # Apply filters if provided
             if experience_level or job_type:
