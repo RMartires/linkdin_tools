@@ -8,6 +8,7 @@ def setup_logger(name: str = "linkedin_automate", level: int = logging.INFO) -> 
     """Set up and configure logger"""
     logger = logging.getLogger(name)
     logger.setLevel(level)
+    logger.propagate = False  # Prevent propagation to root logger to avoid duplicate logs
     
     # Avoid duplicate handlers
     if logger.handlers:

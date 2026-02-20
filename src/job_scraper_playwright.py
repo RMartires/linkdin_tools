@@ -70,8 +70,8 @@ class JobScraperPlaywright:
     async def _navigate_to_jobs_page(self, page):
         """Navigate to LinkedIn Jobs page"""
         logger.info("Navigating to LinkedIn Jobs page...")
-        await page.goto("https://www.linkedin.com/jobs", wait_until="networkidle", timeout=30000)
-        await asyncio.sleep(2)  # Wait for page to fully load
+        await page.goto("https://www.linkedin.com/jobs", wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(5)  # Wait for page to fully load
         logger.info("Successfully navigated to LinkedIn Jobs page")
     
     async def _search_jobs(self, page, search_query: str):
