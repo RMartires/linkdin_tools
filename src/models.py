@@ -41,6 +41,9 @@ class CompanyResearch(BaseModel):
     culture_notes: Optional[str] = Field(None, description="Company culture insights")
     website: Optional[HttpUrl] = Field(None, description="Company website")
     linkedin_url: Optional[HttpUrl] = Field(None, description="LinkedIn company page")
+    linkedin_page_summary: Optional[str] = Field(None, description="Summary of LinkedIn company page")
+    linkedin_about_summary: Optional[str] = Field(None, description="Summary of LinkedIn about page")
+    website_summary: Optional[str] = Field(None, description="Summary of company website")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:
