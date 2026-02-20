@@ -245,7 +245,9 @@ class Orchestrator:
         if not jobs:
             logger.warning("No jobs found. Pipeline stopped.")
             return []
-        
+        logger.info(jobs)
+        return []
+
         # Phase 2: Research companies
         research_results = {}
         if not skip_research:
