@@ -80,6 +80,12 @@ class Database:
                 # Convert HttpUrl to string (MongoDB can't serialize Pydantic HttpUrl objects)
                 if 'url' in job_dict:
                     job_dict['url'] = str(job_dict['url'])
+                if 'company_url' in job_dict and job_dict['company_url'] is not None:
+                    company_url_str = str(job_dict['company_url'])
+                    job_dict['company_url'] = company_url_str
+                    logger.info(f"Saving job {job.job_id} with company_url: {company_url_str}")
+                else:
+                    logger.debug(f"Job {job.job_id} has no company_url (value: {job_dict.get('company_url')})")
                 
                 # Remove created_at from job_dict to avoid conflict with $setOnInsert
                 # created_at should only be set on insert, not on update
@@ -95,6 +101,7 @@ class Database:
                 )
                 if result.upserted_id or result.modified_count > 0:
                     saved_count += 1
+                    logger.debug(f"Successfully saved job {job.job_id} to database")
             except Exception as e:
                 logger.error(f"Error saving job {job.job_id}: {e}")
         
