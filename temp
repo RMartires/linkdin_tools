@@ -1,1 +1,4 @@
 python main.py --keywords "senior software engineer" --location "Dubai, United Arab Emirates"
+
+./scripts/start_pipeline.sh
+./scripts/status_pipeline.sh

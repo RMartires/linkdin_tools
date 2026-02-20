@@ -44,6 +44,9 @@ uv.lock
 *.log
 logs/
 
+# Pipeline daemon
+.pipeline.pid
+
 # OS
 .DS_Store
 Thumbs.db
