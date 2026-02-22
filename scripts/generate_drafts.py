@@ -87,13 +87,23 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
                         await db.update_job_status(job.job_id, "enriched")
                     continue
                 
+                # Save draft to database
+                try:
+                    await db.save_message(job.job_id, draft)
+                    logger.info(f"Saved draft to database for job {job.job_id}")
+                except Exception as e:
+                    logger.error(f"Failed to save draft to database for job {job.job_id}: {e}")
+
                 # Success - update status and clear retry counters
                 await db.update_job_status(job.job_id, "draft_generated")
                 await db.clear_generate_retry_counters(job.job_id)
                 generated_count += 1
+                
+                # Log the generated draft
                 logger.info(f"✓ Successfully generated draft for job {job.job_id}")
+                logger.info(f"Draft content for {job.title} at {job.company}:\n{draft.message_text}")
 
-                # Google Sheets integration: update draft status in latest worksheet
+                # Google Sheets integration: update draft in latest worksheet
                 config_path = Path(__file__).parent / "pipeline_config.yaml"
                 spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
                 if config_path.exists() and spreadsheet_id:
@@ -105,7 +115,7 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
                                 update_draft_in_latest_worksheet,
                                 spreadsheet_id,
                                 job.job_id,
-                                "Yes",
+                                draft.message_text,  # Use actual draft text instead of "Yes"
                             )
                     except Exception as e:
                         logger.warning(f"Google Sheets sync failed (non-fatal): {e}")

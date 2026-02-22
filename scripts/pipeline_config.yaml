@@ -4,8 +4,8 @@
 scraper:
   # Schedule: Daily at 9:00 AM
   schedule:
-    hour: 21
-    minute: 24
+    hour: 18
+    minute: 44
   max_jobs_per_day: 10
   enabled: true
 
