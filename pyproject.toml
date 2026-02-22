@@ -17,6 +17,8 @@ dependencies = [
     "PyPDF2>=3.0.0",
     "apscheduler>=3.10.0",
     "pyyaml>=6.0",
+    "gspread>=6.0.0",
+    "google-auth>=2.0.0",
 ]
 
 [build-system]

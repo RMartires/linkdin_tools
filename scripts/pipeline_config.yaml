@@ -27,6 +27,11 @@ generator:
   batch_size: 10
   enabled: true
 
+# Google Sheets Integration
+google_sheets:
+  enabled: true  # Set to true and configure GOOGLE_SHEETS_SPREADSHEET_ID in .env
+  # spreadsheet_id is read from env: GOOGLE_SHEETS_SPREADSHEET_ID
+
 # Daemon Configuration
 daemon:
   log_file: "logs/pipeline.log"

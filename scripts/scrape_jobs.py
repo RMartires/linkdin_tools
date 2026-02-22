@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+import yaml
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import Database
+from src.google_sheets_client import create_worksheet_and_append_jobs
 from src.job_scraper_playwright import JobScraperPlaywright
 from src.utils.logger import logger
 
@@ -65,8 +67,24 @@ async def scrape_jobs_stage(max_jobs: int = 50, keywords: str = None, location: 
                 await db.mark_job_scraped(job.job_id)
         
         logger.info(f"Successfully saved and marked {saved_count} jobs as 'scraped'")
+
+        # Google Sheets integration: create worksheet with scraped jobs
+        config_path = Path(__file__).parent / "pipeline_config.yaml"
+        spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
+        if config_path.exists() and spreadsheet_id:
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+                if config.get("google_sheets", {}).get("enabled"):
+                    await asyncio.to_thread(
+                        create_worksheet_and_append_jobs,
+                        spreadsheet_id,
+                        jobs,
+                    )
+            except Exception as e:
+                logger.warning(f"Google Sheets sync failed (non-fatal): {e}")
+
         logger.info("Job scraping stage completed")
-        
         return saved_count
         
     except Exception as e:

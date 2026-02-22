@@ -1,7 +1,9 @@
 """Draft generation stage - generates drafts for enriched jobs"""
 
 import asyncio
+import os
 import sys
+import yaml
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -10,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import Database
 from src.draft_generator import DraftGenerator
+from src.google_sheets_client import update_draft_in_latest_worksheet
 from src.utils.logger import logger
 
 load_dotenv()
@@ -89,6 +92,23 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
                 await db.clear_generate_retry_counters(job.job_id)
                 generated_count += 1
                 logger.info(f"✓ Successfully generated draft for job {job.job_id}")
+
+                # Google Sheets integration: update draft status in latest worksheet
+                config_path = Path(__file__).parent / "pipeline_config.yaml"
+                spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
+                if config_path.exists() and spreadsheet_id:
+                    try:
+                        with open(config_path) as f:
+                            config = yaml.safe_load(f) or {}
+                        if config.get("google_sheets", {}).get("enabled"):
+                            await asyncio.to_thread(
+                                update_draft_in_latest_worksheet,
+                                spreadsheet_id,
+                                job.job_id,
+                                "Yes",
+                            )
+                    except Exception as e:
+                        logger.warning(f"Google Sheets sync failed (non-fatal): {e}")
                 
             except Exception as e:
                 error_msg = str(e)
