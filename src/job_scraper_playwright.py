@@ -19,19 +19,21 @@ load_dotenv()
 class JobScraperPlaywright:
     """Scrape LinkedIn jobs using Playwright"""
     
-    def __init__(self, model: Optional[str] = None, browser=None, playwright_browser=None):
+    def __init__(self, model: Optional[str] = None, browser=None, playwright_browser=None, headless: bool = False):
         """Initialize job scraper
         
         Args:
             model: Optional model name override (kept for backward compatibility)
             browser: Optional browser-use Browser instance (backward compatibility)
             playwright_browser: Optional Playwright Browser instance
+            headless: Whether to run browser in headless mode (default: False)
         """
         self.model = model  # Kept for backward compatibility but not used
         self.browser = browser  # Kept for backward compatibility
         self.playwright_browser = playwright_browser
         self.session_manager = SessionManager()
         self.page = None
+        self.headless = headless
     
     def _extract_job_id(self, url: str) -> Optional[str]:
         """Extract job ID from LinkedIn URL"""
@@ -50,10 +52,18 @@ class JobScraperPlaywright:
             logger.warning(f"Could not extract job ID from URL {url}: {e}")
             return None
     
-    async def _get_page(self, headless: bool = False):
-        """Get or create a Playwright page"""
+    async def _get_page(self, headless: Optional[bool] = None):
+        """Get or create a Playwright page
+        
+        Args:
+            headless: Override headless mode (uses self.headless if None)
+        """
         if self.page and not self.page.is_closed():
             return self.page
+        
+        # Use instance headless if not overridden
+        if headless is None:
+            headless = self.headless
         
         # Get browser (launched with LinkedIn cookies via storage_state)
         if not self.playwright_browser:
@@ -1126,7 +1136,7 @@ class JobScraperPlaywright:
         try:
             # Get Playwright page
             logger.info("Getting Playwright page...")
-            page = await self._get_page(headless=False)
+            page = await self._get_page()  # Uses self.headless
             logger.info(f"Got page, current URL: {page.url}")
             
             # Navigate to LinkedIn Jobs (assumes already logged in via cookies)

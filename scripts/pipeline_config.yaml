@@ -1,13 +1,35 @@
 # Pipeline Daemon Configuration
 
+# Global Browser Configuration
+browser:
+  headless: true  # Set to false to show browser windows (useful for debugging)
+
 # Job Scraper Configuration
 scraper:
   # Schedule: Daily at 9:00 AM
   schedule:
-    hour: 18
-    minute: 44
+    hour: 20
+    minute: 30
   max_jobs_per_day: 10
   enabled: true
+  # Optional: Delay between multiple search runs (seconds)
+  delay_between_runs: 30
+  # Multiple search configurations - if provided, will iterate through each
+  # If not provided, falls back to JOB_KEYWORDS and JOB_LOCATION env vars
+  search_configs:
+    # Example configurations (uncomment and modify as needed):
+    - title: "Senior software engineer"
+      location: "Dubai, United Arab Emirates"
+      max_jobs: 10  # Optional: override global max_jobs_per_day
+    - title: "AI Engineer"
+      location: "Dubai, United Arab Emirates"
+      max_jobs: 10
+    - title: "Senior software engineer"
+      location: "Singapore"
+      max_jobs: 10
+    - title: "AI Engineer"
+      location: "Singapore"
+      max_jobs: 10
 
 # Company Enricher Configuration
 enricher:

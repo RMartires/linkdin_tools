@@ -87,7 +87,7 @@ class PipelineDaemon:
         }
     
     async def scrape_jobs_task(self):
-        """Scheduled task for scraping jobs"""
+        """Scheduled task for scraping jobs with multiple configurations"""
         if not self.config["scraper"]["enabled"]:
             logger.debug("Scraper is disabled, skipping")
             return
@@ -97,16 +97,52 @@ class PipelineDaemon:
             logger.info(f"Running scheduled scrape_jobs task at {datetime.now()}")
             logger.info("=" * 60)
             
-            max_jobs = self.config["scraper"]["max_jobs_per_day"]
-            keywords = os.getenv("JOB_KEYWORDS")
-            location = os.getenv("JOB_LOCATION")
+            scraper_config = self.config["scraper"]
+            search_configs = scraper_config.get("search_configs", [])
+            delay_between_runs = scraper_config.get("delay_between_runs", 30)
+            default_max_jobs = scraper_config.get("max_jobs_per_day", 50)
             
-            count = await scrape_jobs_stage(
-                max_jobs=max_jobs,
-                keywords=keywords,
-                location=location
-            )
-            logger.info(f"Scrape task completed: {count} jobs scraped")
+            # If search_configs is provided, iterate through them
+            if search_configs:
+                total_scraped = 0
+                for idx, config in enumerate(search_configs, 1):
+                    title = config.get("title")
+                    location = config.get("location")
+                    max_jobs = config.get("max_jobs", default_max_jobs)
+                    
+                    if not title:
+                        logger.warning(f"Skipping search config {idx}: missing 'title' field")
+                        continue
+                    
+                    logger.info(f"Running scrape {idx}/{len(search_configs)}: title='{title}', location='{location or 'None'}', max_jobs={max_jobs}")
+                    
+                    try:
+                        count = await scrape_jobs_stage(
+                            max_jobs=max_jobs,
+                            keywords=title,
+                            location=location
+                        )
+                        total_scraped += count
+                        logger.info(f"Scrape {idx} completed: {count} jobs scraped")
+                    except Exception as e:
+                        logger.error(f"Error in scrape {idx}: {e}", exc_info=True)
+                    
+                    # Delay between runs (except after last one)
+                    if idx < len(search_configs):
+                        logger.info(f"Waiting {delay_between_runs} seconds before next scrape...")
+                        await asyncio.sleep(delay_between_runs)
+                
+                logger.info(f"All scrape tasks completed: {total_scraped} total jobs scraped")
+            else:
+                # Fallback to env vars (backward compatibility)
+                keywords = os.getenv("JOB_KEYWORDS")
+                location = os.getenv("JOB_LOCATION")
+                count = await scrape_jobs_stage(
+                    max_jobs=default_max_jobs,
+                    keywords=keywords,
+                    location=location
+                )
+                logger.info(f"Scrape task completed: {count} jobs scraped")
         except Exception as e:
             logger.error(f"Error in scrape_jobs_task: {e}", exc_info=True)
     

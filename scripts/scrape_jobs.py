@@ -14,6 +14,7 @@ from src.database import Database
 from src.google_sheets_client import create_worksheet_and_append_jobs
 from src.job_scraper_playwright import JobScraperPlaywright
 from src.utils.logger import logger
+from src.utils.config import load_pipeline_config, get_headless_mode
 
 load_dotenv()
 
@@ -36,14 +37,19 @@ async def scrape_jobs_stage(max_jobs: int = 50, keywords: str = None, location: 
         logger.info("Starting job scraping stage")
         logger.info("=" * 60)
         
+        # Load config and get headless mode
+        config_path = Path(__file__).parent / "pipeline_config.yaml"
+        config = load_pipeline_config(config_path)
+        headless = get_headless_mode(config)
+        
         # Get search parameters from env or args
         search_keywords = keywords or os.getenv("JOB_KEYWORDS", "software engineer")
         search_location = location or os.getenv("JOB_LOCATION")
         
-        logger.info(f"Search parameters: keywords='{search_keywords}', location='{search_location}', max_jobs={max_jobs}")
+        logger.info(f"Search parameters: keywords='{search_keywords}', location='{search_location}', max_jobs={max_jobs}, headless={headless}")
         
-        # Initialize scraper
-        scraper = JobScraperPlaywright()
+        # Initialize scraper with headless flag
+        scraper = JobScraperPlaywright(headless=headless)
         
         # Scrape jobs
         jobs = await scraper.scrape_jobs(
@@ -69,17 +75,23 @@ async def scrape_jobs_stage(max_jobs: int = 50, keywords: str = None, location: 
         logger.info(f"Successfully saved and marked {saved_count} jobs as 'scraped'")
 
         # Google Sheets integration: create worksheet with scraped jobs
-        config_path = Path(__file__).parent / "pipeline_config.yaml"
         spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
         if config_path.exists() and spreadsheet_id:
             try:
-                with open(config_path) as f:
-                    config = yaml.safe_load(f) or {}
                 if config.get("google_sheets", {}).get("enabled"):
+                    # Build search query string for Google Sheets
+                    search_query_parts = []
+                    if search_keywords:
+                        search_query_parts.append(search_keywords)
+                    if search_location:
+                        search_query_parts.append(f"({search_location})")
+                    search_query = " | ".join(search_query_parts) if search_query_parts else ""
+                    
                     await asyncio.to_thread(
                         create_worksheet_and_append_jobs,
                         spreadsheet_id,
                         jobs,
+                        search_query,
                     )
             except Exception as e:
                 logger.warning(f"Google Sheets sync failed (non-fatal): {e}")

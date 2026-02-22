@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.database import Database
 from src.company_researcher import CompanyResearcher
 from src.utils.logger import logger
+from src.utils.config import load_pipeline_config, get_headless_mode
 
 load_dotenv()
 
@@ -32,6 +33,13 @@ async def enrich_companies_stage(batch_size: int = 10, max_retries: int = 3):
         logger.info("Starting company enrichment stage")
         logger.info("=" * 60)
         
+        # Load config and get headless mode
+        config_path = Path(__file__).parent / "pipeline_config.yaml"
+        config = load_pipeline_config(config_path)
+        headless = get_headless_mode(config)
+        
+        logger.info(f"Browser headless mode: {headless}")
+        
         # Get jobs ready for enrichment
         jobs = await db.get_jobs_for_enrichment(limit=batch_size, max_retries=max_retries)
         
@@ -41,8 +49,8 @@ async def enrich_companies_stage(batch_size: int = 10, max_retries: int = 3):
         
         logger.info(f"Found {len(jobs)} jobs ready for enrichment")
         
-        # Initialize researcher
-        researcher = CompanyResearcher(db=db)
+        # Initialize researcher with headless flag
+        researcher = CompanyResearcher(db=db, headless=headless)
         
         enriched_count = 0
         failed_count = 0

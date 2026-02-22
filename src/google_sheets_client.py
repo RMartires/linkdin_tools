@@ -42,12 +42,19 @@ def _generate_worksheet_title() -> str:
 def create_worksheet_and_append_jobs(
     spreadsheet_id: str,
     jobs: List[JobListing],
+    search_query: str = "",
     credentials_path: Optional[str] = None,
 ) -> Optional[str]:
     """
     Create a new worksheet with today's date + random suffix and append job rows.
 
-    Columns: Job ID | Job Title | Company | LinkedIn Company URL | Draft Generated
+    Columns: Job ID | Job Title | Company | LinkedIn Company URL | Search Query | Draft Generated
+
+    Args:
+        spreadsheet_id: Google Sheets spreadsheet ID
+        jobs: List of job listings to append
+        search_query: Search query string (title and location) to add to each row
+        credentials_path: Optional path to credentials file
 
     Returns the worksheet title if successful, None otherwise.
     """
@@ -59,12 +66,12 @@ def create_worksheet_and_append_jobs(
         worksheet = spreadsheet.add_worksheet(
             title=worksheet_title,
             rows=max(len(jobs) + 10, 100),
-            cols=5,
+            cols=6,  # Updated to 6 columns
         )
 
-        # Header row
-        headers = ["Job ID", "Job Title", "Company", "LinkedIn Company URL", "Draft Generated"]
-        worksheet.update("A1:E1", [headers])
+        # Header row - now includes Search Query column
+        headers = ["Job ID", "Job Title", "Company", "LinkedIn Company URL", "Search Query", "Draft Generated"]
+        worksheet.update("A1:F1", [headers])
 
         # Data rows
         rows = []
@@ -75,11 +82,12 @@ def create_worksheet_and_append_jobs(
                 job.title or "",
                 job.company or "",
                 company_url,
+                search_query,  # Search Query column
                 "",  # Draft Generated - empty initially
             ])
 
         if rows:
-            worksheet.update(f"A2:E{len(rows) + 1}", rows)
+            worksheet.update(f"A2:F{len(rows) + 1}", rows)
 
         logger.info(f"Created worksheet '{worksheet_title}' with {len(jobs)} jobs")
         return worksheet_title
@@ -116,9 +124,9 @@ def update_draft_in_latest_worksheet(
             return False
         cell = cells[0]
 
-        # Draft Generated is column E (5th column), same row
+        # Draft Generated is column F (6th column), same row (moved due to Search Query column)
         row = cell.row
-        col_letter = "E"
+        col_letter = "F"
         range_ref = f"{col_letter}{row}"
         latest.update(range_ref, [[draft_value]])
         logger.info(f"Updated draft status for job {job_id} in worksheet '{latest.title}'")

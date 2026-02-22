@@ -18,13 +18,14 @@ load_dotenv()
 class CompanyResearcher:
     """Research companies using browser-use"""
     
-    def __init__(self, model: Optional[str] = None, browser: Optional[Browser] = None, db: Optional[Database] = None):
+    def __init__(self, model: Optional[str] = None, browser: Optional[Browser] = None, db: Optional[Database] = None, headless: bool = False):
         """Initialize company researcher with OpenRouter LLM
         
         Args:
             model: Optional model name override
             browser: Optional Browser instance (for session persistence)
             db: Optional Database instance for saving research
+            headless: Whether to run browser in headless mode (default: False)
         """
         model_name = model or os.getenv('MODEL_NAME', 'anthropic/claude-sonnet-4')
         self.llm = ChatOpenAI(
@@ -35,6 +36,7 @@ class CompanyResearcher:
         self.browser = browser
         self.session_manager = SessionManager()
         self.db = db
+        self.headless = headless
     
     def _get_linkedin_about_url(self, company_url: str) -> str:
         """
@@ -79,7 +81,7 @@ class CompanyResearcher:
             # Create a fresh browser instance for this agent call to avoid session reset issues
             # All browsers use the same user_data_dir so cookies are shared
             if not browser:
-                browser = self.session_manager.get_browser(headless=False)
+                browser = self.session_manager.get_browser(headless=self.headless)
             
             task_prompt = f"""
             Visit the following URL: {url}
@@ -157,7 +159,7 @@ class CompanyResearcher:
             # Create a fresh browser instance for this agent call to avoid session reset issues
             # All browsers use the same user_data_dir so cookies are shared
             if not browser:
-                browser = self.session_manager.get_browser(headless=False)
+                browser = self.session_manager.get_browser(headless=self.headless)
             
             task_prompt = f"""
             Visit the following LinkedIn company page: {linkedin_url}
