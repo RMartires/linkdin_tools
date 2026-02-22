@@ -27,14 +27,14 @@ class Orchestrator:
         self.model = model
         self.session_manager = SessionManager()
         
-        # Create shared browser instances for session persistence
-        # JobScraperPlaywright uses Playwright, CompanyResearcher uses browser-use (for now)
-        self.browser = self.session_manager.get_browser(headless=False)  # For CompanyResearcher
-        self.playwright_browser = None  # Will be initialized async
+        # Defer browser-use creation - it launches Chrome and conflicts with Playwright
+        # when both try to use the same profile. Only create when research phase runs.
+        self.browser = None  # Lazy init in research_companies
+        self.playwright_browser = None  # Will be initialized async in scrape_jobs
         
-        # Use Playwright scraper instead of browser-use scraper
-        self.job_scraper = JobScraperPlaywright(model=model, browser=self.browser)  # Will set playwright_browser async
-        self.company_researcher = CompanyResearcher(model=model, browser=self.browser, db=db)
+        # Use Playwright scraper (doesn't need browser-use)
+        self.job_scraper = JobScraperPlaywright(model=model, browser=None)
+        self.company_researcher = CompanyResearcher(model=model, browser=None, db=db)
     
     async def _ensure_playwright_browser(self):
         """Ensure Playwright browser is initialized"""
@@ -57,6 +57,9 @@ class Orchestrator:
             List of JobListing objects
         """
         logger.info("Starting job scraping phase...")
+        
+        # Ensure Playwright browser is initialized before scraping
+        await self._ensure_playwright_browser()
         
         # Scrape jobs
         jobs = await self.job_scraper.scrape_jobs(
@@ -136,9 +139,17 @@ class Orchestrator:
         logger.info(f"Completed research for {len(research_results)} companies")
         return research_results
     
+    def _ensure_browser_use_browser(self):
+        """Lazy init browser-use browser (only needed for company research)"""
+        if self.browser is None:
+            self.browser = self.session_manager.get_browser(headless=False)
+            self.company_researcher.browser = self.browser
+            logger.info("Created browser-use browser for company research")
+    
     async def _research_single_company(self, job: JobListing) -> Optional[CompanyResearch]:
         """Research a single company"""
         try:
+            self._ensure_browser_use_browser()
             research = await self.company_researcher.research_company(job)
             return research
         except Exception as e:

@@ -53,3 +53,4 @@ Thumbs.db
 
 # Browser session data (cookies, localStorage, etc.)
 .browser_data/
+linkedin_storage_state.json

@@ -69,12 +69,15 @@ Automated tool for scraping LinkedIn jobs, researching companies, and generating
      - Examples: `openai/gpt-4o`, `google/gemini-pro`, `anthropic/claude-sonnet-4`
      - See available models at https://openrouter.ai/models
 
-6. **Set up LinkedIn session (first time only):**
-   - Run the tool once: `python main.py --keywords "test"`
-   - Browser will open - log into LinkedIn manually
-   - Session will be saved automatically in `.browser_data/`
-   - Future runs will use saved session (no login needed)
-   - See `SESSION_SETUP.md` for detailed instructions
+6. **Export LinkedIn cookies (one-time setup, repeat when session expires):**
+   ```bash
+   # Log into LinkedIn in Chrome first, then run:
+   python scripts/export_linkedin_cookies.py
+   ```
+   - **macOS**: Requires Full Disk Access for Terminal (System Settings → Privacy & Security)
+   - Uses your Chrome profile from `BROWSER_PROFILE_DIRECTORY` in `.env` (default: Profile 3)
+   - Creates `linkedin_storage_state.json` with your session
+   - Re-run when LinkedIn logs you out (typically every few weeks)
 
 ## Usage
 
@@ -138,6 +141,28 @@ python main.py --export csv --company "Google" --date-from 2025-02-01 --date-to 
 - `--date-to`: Filter to date (YYYY-MM-DD)
 - `--list`: List jobs from database
 - `--limit`: Limit for list command (default: 20)
+
+## Troubleshooting
+
+### LinkedIn storage state not found
+
+If you see `LinkedIn storage state not found`, run the export script first:
+
+```bash
+python scripts/export_linkedin_cookies.py
+```
+
+### Full Disk Access required (macOS)
+
+The cookie export needs to read Chrome's encrypted cookie database. Grant **Full Disk Access** to Terminal (or your IDE's terminal) in System Settings → Privacy & Security → Full Disk Access.
+
+### LinkedIn session expired
+
+If the scraper shows LinkedIn's login page, your cookies have expired. Re-export:
+
+```bash
+python scripts/export_linkedin_cookies.py
+```
 
 ## Project Structure
 

@@ -55,16 +55,25 @@ class JobScraperPlaywright:
         if self.page and not self.page.is_closed():
             return self.page
         
-        # Get browser context
+        # Get browser (launched with LinkedIn cookies via storage_state)
         if not self.playwright_browser:
             self.playwright_browser = await self.session_manager.get_playwright_browser(headless=headless)
         
-        # Get pages from browser (persistent context returns pages directly)
-        pages = self.playwright_browser.pages
-        if pages:
-            self.page = pages[0]
+        # Get the context with LinkedIn cookies and a page
+        contexts = self.playwright_browser.contexts
+        if contexts:
+            context = contexts[0]
+            pages = context.pages
+            if pages:
+                self.page = pages[0]
+            else:
+                self.page = await context.new_page()
         else:
-            self.page = await self.playwright_browser.new_page()
+            context = await self.playwright_browser.new_context()
+            self.page = await context.new_page()
+        
+        # Auto-dismiss any JavaScript dialogs
+        self.page.on("dialog", lambda dialog: dialog.dismiss())
         
         return self.page
     
@@ -1058,9 +1067,12 @@ class JobScraperPlaywright:
         
         try:
             # Get Playwright page
+            logger.info("Getting Playwright page...")
             page = await self._get_page(headless=False)
+            logger.info(f"Got page, current URL: {page.url}")
             
             # Navigate to LinkedIn Jobs (assumes already logged in via cookies)
+            logger.info("Navigating to LinkedIn Jobs page...")
             await self._navigate_to_jobs_page(page)
             
             # Perform search with separate title and location fields
