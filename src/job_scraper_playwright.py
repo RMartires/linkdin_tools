@@ -5,7 +5,7 @@ import re
 import asyncio
 import time
 from typing import List, Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -298,6 +298,64 @@ class JobScraperPlaywright:
             logger.info("Job results page successfully loaded")
         
         await asyncio.sleep(2)  # Additional wait for any animations/rendering
+    
+    async def _apply_date_filter(self, page):
+        """Apply date filter to show jobs from past 24 hours by adding query parameter to URL"""
+        logger.info("Applying date filter: Past 24 hours")
+        
+        try:
+            # Get current URL
+            current_url = page.url
+            logger.debug(f"Current URL: {current_url}")
+            
+            # Parse URL and add/update the f_TPR parameter
+            parsed = urlparse(current_url)
+            query_params = parse_qs(parsed.query)
+            
+            # Add or update the f_TPR parameter to r86400 (Past 24 hours)
+            query_params['f_TPR'] = ['r86400']
+            
+            # Reconstruct the URL with the new query parameter
+            new_query = urlencode(query_params, doseq=True)
+            new_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                new_query,
+                parsed.fragment
+            ))
+            
+            logger.info(f"Navigating to URL with date filter: {new_url}")
+            
+            # Navigate to the new URL
+            await page.goto(new_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)  # Wait for page to load
+            
+            # Wait for job results to appear
+            logger.info("Waiting for filtered results to load...")
+            job_results_found = False
+            max_wait_time = 15
+            start_time = time.time()
+            
+            while (time.time() - start_time) < max_wait_time:
+                try:
+                    job_count = await page.evaluate('document.querySelectorAll("[data-job-id]").length')
+                    if job_count > 0:
+                        logger.info(f"Found {job_count} job cards after applying date filter")
+                        job_results_found = True
+                        break
+                    await asyncio.sleep(1)
+                except:
+                    await asyncio.sleep(1)
+            
+            if job_results_found:
+                logger.info("✓ Date filter (Past 24 hours) applied successfully via URL parameter")
+            else:
+                logger.warning("Date filter applied but job results not detected")
+                
+        except Exception as e:
+            logger.warning(f"Could not apply date filter: {e}. Continuing without date filter...", exc_info=True)
     
     async def _apply_filters(self, page, experience_level: Optional[str] = None, job_type: Optional[str] = None):
         """Apply experience level and job type filters if provided"""
@@ -1081,6 +1139,9 @@ class JobScraperPlaywright:
             
             # Brief verification that we're on results page (already checked in _search_jobs)
             logger.debug(f"Current page URL: {page.url}")
+            
+            # Apply date filter (Past 24 hours) before scrolling
+            await self._apply_date_filter(page)
             
             # Apply filters if provided
             if experience_level or job_type:
