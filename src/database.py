@@ -167,6 +167,26 @@ class Database:
             return CompanyResearch(**doc)
         return None
     
+    async def get_company_research_by_name(self, company_name: str) -> Optional[CompanyResearch]:
+        """Get company research by company name (returns first match with summaries)"""
+        # Find research with this company name that has at least one summary
+        # Query for research that has either linkedin_about_summary or linkedin_page_summary
+        # We'll filter for non-empty strings after fetching
+        doc = await self.db.company_research.find_one({
+            "company_name": company_name,
+            "$or": [
+                {"linkedin_about_summary": {"$exists": True, "$ne": None}},
+                {"linkedin_page_summary": {"$exists": True, "$ne": None}}
+            ]
+        })
+        if doc:
+            doc.pop("_id", None)
+            research = CompanyResearch(**doc)
+            # Verify that at least one summary is non-empty
+            if research.linkedin_about_summary or research.linkedin_page_summary:
+                return research
+        return None
+    
     # Message operations
     async def save_message(self, job_id: str, message: GeneratedMessage) -> bool:
         """Save generated message"""

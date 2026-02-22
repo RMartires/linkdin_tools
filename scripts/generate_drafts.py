@@ -56,11 +56,11 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
                 await db.update_job_status(job.job_id, "generating")
                 logger.info(f"Generating draft for job: {job.title} at {job.company}")
                 
-                # Get company research
-                research = await db.get_company_research(job.job_id)
+                # Get company research by company name
+                research = await db.get_company_research_by_name(job.company)
                 
                 if not research:
-                    error_msg = "No company research found"
+                    error_msg = f"No company research found for company {job.company}"
                     logger.warning(f"Job {job.job_id}: {error_msg}")
                     await db.increment_generate_retry(job.job_id, error_msg)
                     

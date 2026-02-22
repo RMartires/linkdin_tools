@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import Database
 from src.company_researcher import CompanyResearcher
+from src.models import CompanyResearch
 from src.utils.logger import logger
 from src.utils.config import load_pipeline_config, get_headless_mode
 
@@ -61,8 +62,31 @@ async def enrich_companies_stage(batch_size: int = 10, max_retries: int = 3):
                 await db.update_job_status(job.job_id, "enriching")
                 logger.info(f"Enriching company for job: {job.title} at {job.company}")
                 
-                # Research company
-                research = await researcher.research_company(job)
+                # Check if company research already exists
+                existing_research = await db.get_company_research_by_name(job.company)
+                if existing_research and (existing_research.linkedin_about_summary or existing_research.linkedin_page_summary):
+                    logger.info(f"Company research already exists for {job.company} with summaries. Reusing existing research for job {job.job_id}")
+                    # Copy existing research and update job_id
+                    research = CompanyResearch(
+                        job_id=job.job_id,
+                        company_name=existing_research.company_name,
+                        industry=existing_research.industry,
+                        size=existing_research.size,
+                        recent_news=existing_research.recent_news or [],
+                        tech_stack=existing_research.tech_stack or [],
+                        culture_notes=existing_research.culture_notes,
+                        website=existing_research.website,
+                        linkedin_url=existing_research.linkedin_url,
+                        linkedin_page_summary=existing_research.linkedin_page_summary,
+                        linkedin_about_summary=existing_research.linkedin_about_summary,
+                        website_summary=existing_research.website_summary,
+                        created_at=existing_research.created_at
+                    )
+                    # Save with new job_id
+                    await db.save_company_research(job.job_id, research)
+                else:
+                    # Research company
+                    research = await researcher.research_company(job)
                 
                 # Check if research has at least one summary (required for next stage)
                 if not any([

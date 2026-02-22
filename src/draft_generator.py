@@ -292,11 +292,11 @@ Subject: [Your subject line]
         
         generated_drafts = []
         for job in jobs:
-            # Get company research
-            research = await self.db.get_company_research(job.job_id)
+            # Get company research by company name
+            research = await self.db.get_company_research_by_name(job.company)
             
             if not research:
-                logger.warning(f"No company research found for job {job.job_id} ({job.company}). Skipping.")
+                logger.warning(f"No company research found for company {job.company} (job {job.job_id}). Skipping.")
                 continue
             
             # Validate research has summaries
