@@ -103,7 +103,7 @@ def update_draft_in_latest_worksheet(
     draft_value: str = "Yes",
 ) -> bool:
     """
-    Find job_id in the latest worksheet (by index) and update the Draft Generated column.
+    Find job_id across all worksheets and update the Draft Generated column in the correct worksheet.
 
     Returns True if updated successfully, False otherwise.
     """
@@ -116,21 +116,22 @@ def update_draft_in_latest_worksheet(
             logger.warning("No worksheets found in spreadsheet")
             return False
 
-        # Latest worksheet = last in list (most recently added)
-        latest = worksheets[-1]
-        cells = latest.findall(job_id)
-        if not cells:
-            logger.warning(f"Could not find job_id '{job_id}' in latest worksheet '{latest.title}'")
-            return False
-        cell = cells[0]
+        # Search all worksheets for the job_id (starting from latest, but check all if not found)
+        # This ensures we find the job in the correct worksheet, not just the latest one
+        for worksheet in reversed(worksheets):  # Start from latest, but check all
+            cells = worksheet.findall(job_id)
+            if cells:
+                cell = cells[0]
+                # Draft Generated is column F (6th column), same row
+                row = cell.row
+                col_letter = "F"
+                range_ref = f"{col_letter}{row}"
+                worksheet.update(range_ref, [[draft_value]])
+                logger.info(f"Updated draft status for job {job_id} in worksheet '{worksheet.title}'")
+                return True
 
-        # Draft Generated is column F (6th column), same row (moved due to Search Query column)
-        row = cell.row
-        col_letter = "F"
-        range_ref = f"{col_letter}{row}"
-        latest.update(range_ref, [[draft_value]])
-        logger.info(f"Updated draft status for job {job_id} in worksheet '{latest.title}'")
-        return True
+        logger.warning(f"Could not find job_id '{job_id}' in any worksheet")
+        return False
 
     except Exception as e:
         logger.error(f"Failed to update draft for job {job_id}: {e}", exc_info=True)

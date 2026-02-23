@@ -8,8 +8,8 @@ browser:
 scraper:
   # Schedule: Daily at 9:00 AM
   schedule:
-    hour: 20
-    minute: 30
+    hour: 7
+    minute: 10
   max_jobs_per_day: 10
   enabled: true
   # Optional: Delay between multiple search runs (seconds)
