@@ -19,6 +19,8 @@ dependencies = [
     "pyyaml>=6.0",
     "gspread>=6.0.0",
     "google-auth>=2.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
 ]
 
 [build-system]

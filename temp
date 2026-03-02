@@ -1,4 +1,6 @@
 python main.py --keywords "senior software engineer" --location "Dubai, United Arab Emirates"
 
+python scripts/scrape_jobs.py --max-jobs 10 --keywords "software engineer" --location "San Francisco"
+
 ./scripts/start_pipeline.sh
 ./scripts/status_pipeline.sh

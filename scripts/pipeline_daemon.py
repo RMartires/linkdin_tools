@@ -8,10 +8,14 @@ import threading
 import yaml
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from dotenv import load_dotenv
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+import uvicorn
 
 # Add parent directory to path for src imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -47,6 +51,8 @@ class PipelineDaemon:
         self._shutdown_event = threading.Event()
         self.pid_file = Path(__file__).parent.parent / self.config["daemon"]["pid_file"]
         self.log_file = Path(__file__).parent.parent / self.config["daemon"]["log_file"]
+        self.api_server = None
+        self.api_thread = None
         
     def _load_config(self) -> dict:
         """Load configuration from YAML file"""
@@ -83,6 +89,11 @@ class PipelineDaemon:
                 "log_file": "logs/pipeline.log",
                 "pid_file": ".pipeline.pid",
                 "log_level": "INFO"
+            },
+            "api": {
+                "enabled": True,
+                "port": 8000,
+                "host": "127.0.0.1"
             }
         }
     
@@ -257,6 +268,208 @@ class PipelineDaemon:
         self.running = False
         self._shutdown_event.set()
     
+    def setup_api_server(self):
+        """Setup FastAPI server for manual triggers"""
+        api_config = self.config.get("api", {})
+        if not api_config.get("enabled", True):
+            logger.info("API server is disabled")
+            return
+        
+        app = FastAPI(title="Pipeline Daemon API", description="API for manually triggering pipeline stages")
+        
+        @app.get("/")
+        async def root():
+            return {
+                "message": "Pipeline Daemon API",
+                "endpoints": {
+                    "trigger_scrape": "/api/trigger/scrape",
+                    "trigger_enrich": "/api/trigger/enrich",
+                    "trigger_generate": "/api/trigger/generate",
+                    "health": "/api/health"
+                }
+            }
+        
+        @app.get("/api/health")
+        async def health():
+            return {
+                "status": "healthy",
+                "daemon_running": self.running,
+                "scheduler_running": self.scheduler.running if hasattr(self.scheduler, 'running') else False
+            }
+        
+        @app.post("/api/trigger/scrape")
+        async def trigger_scrape(
+            keywords: Optional[str] = None,
+            location: Optional[str] = None,
+            max_jobs: Optional[int] = None
+        ):
+            """Manually trigger job scraping"""
+            try:
+                logger.info(f"Manual scrape trigger: keywords={keywords}, location={location}, max_jobs={max_jobs}")
+                
+                # Use provided params or fall back to config/env
+                scraper_config = self.config["scraper"]
+                max_jobs_to_scrape = max_jobs or scraper_config.get("max_jobs_per_day", 50)
+                search_keywords = keywords or os.getenv("JOB_KEYWORDS")
+                search_location = location or os.getenv("JOB_LOCATION")
+                
+                # Run in background thread
+                def run_scrape():
+                    asyncio.run(self.scrape_jobs_task_manual(
+                        keywords=search_keywords,
+                        location=search_location,
+                        max_jobs=max_jobs_to_scrape
+                    ))
+                threading.Thread(target=run_scrape, daemon=True).start()
+                
+                return {
+                    "status": "triggered",
+                    "message": "Scrape job started",
+                    "params": {
+                        "keywords": search_keywords,
+                        "location": search_location,
+                        "max_jobs": max_jobs_to_scrape
+                    }
+                }
+            except Exception as e:
+                logger.error(f"Error triggering scrape: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @app.post("/api/trigger/enrich")
+        async def trigger_enrich(
+            batch_size: Optional[int] = None,
+            max_retries: Optional[int] = None
+        ):
+            """Manually trigger company enrichment"""
+            try:
+                logger.info(f"Manual enrich trigger: batch_size={batch_size}, max_retries={max_retries}")
+                
+                enricher_config = self.config["enricher"]
+                batch = batch_size or enricher_config.get("batch_size", 10)
+                retries = max_retries or enricher_config.get("max_retries", 3)
+                
+                # Run in background thread
+                def run_enrich():
+                    asyncio.run(self.enrich_companies_task_manual(
+                        batch_size=batch,
+                        max_retries=retries
+                    ))
+                threading.Thread(target=run_enrich, daemon=True).start()
+                
+                return {
+                    "status": "triggered",
+                    "message": "Enrich job started",
+                    "params": {
+                        "batch_size": batch,
+                        "max_retries": retries
+                    }
+                }
+            except Exception as e:
+                logger.error(f"Error triggering enrich: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @app.post("/api/trigger/generate")
+        async def trigger_generate(
+            batch_size: Optional[int] = None,
+            max_retries: Optional[int] = None
+        ):
+            """Manually trigger draft generation"""
+            try:
+                logger.info(f"Manual generate trigger: batch_size={batch_size}, max_retries={max_retries}")
+                
+                generator_config = self.config["generator"]
+                batch = batch_size or generator_config.get("batch_size", 10)
+                retries = max_retries or generator_config.get("max_retries", 3)
+                
+                # Run in background thread
+                def run_generate():
+                    asyncio.run(self.generate_drafts_task_manual(
+                        batch_size=batch,
+                        max_retries=retries
+                    ))
+                threading.Thread(target=run_generate, daemon=True).start()
+                
+                return {
+                    "status": "triggered",
+                    "message": "Generate job started",
+                    "params": {
+                        "batch_size": batch,
+                        "max_retries": retries
+                    }
+                }
+            except Exception as e:
+                logger.error(f"Error triggering generate: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        self.api_server = app
+        return app
+    
+    def start_api_server(self):
+        """Start API server in background thread"""
+        api_config = self.config.get("api", {})
+        if not api_config.get("enabled", True):
+            return
+        
+        app = self.setup_api_server()
+        if not app:
+            return
+        
+        port = api_config.get("port", 8000)
+        host = api_config.get("host", "127.0.0.1")
+        
+        def run_server():
+            uvicorn.run(app, host=host, port=port, log_level="info")
+        
+        self.api_thread = threading.Thread(target=run_server, daemon=True)
+        self.api_thread.start()
+        logger.info(f"API server started on http://{host}:{port}")
+    
+    async def scrape_jobs_task_manual(self, keywords: Optional[str] = None, location: Optional[str] = None, max_jobs: int = 50):
+        """Manual scrape task (can override params)"""
+        try:
+            logger.info("=" * 60)
+            logger.info(f"Running manual scrape_jobs task at {datetime.now()}")
+            logger.info("=" * 60)
+            
+            count = await scrape_jobs_stage(
+                max_jobs=max_jobs,
+                keywords=keywords,
+                location=location
+            )
+            logger.info(f"Manual scrape task completed: {count} jobs scraped")
+        except Exception as e:
+            logger.error(f"Error in manual scrape_jobs_task: {e}", exc_info=True)
+    
+    async def enrich_companies_task_manual(self, batch_size: int = 10, max_retries: int = 3):
+        """Manual enrich task"""
+        try:
+            logger.info("=" * 60)
+            logger.info(f"Running manual enrich_companies task at {datetime.now()}")
+            logger.info("=" * 60)
+            
+            count = await enrich_companies_stage(
+                batch_size=batch_size,
+                max_retries=max_retries
+            )
+            logger.info(f"Manual enrich task completed: {count} companies enriched")
+        except Exception as e:
+            logger.error(f"Error in manual enrich_companies_task: {e}", exc_info=True)
+    
+    async def generate_drafts_task_manual(self, batch_size: int = 10, max_retries: int = 3):
+        """Manual generate task"""
+        try:
+            logger.info("=" * 60)
+            logger.info(f"Running manual generate_drafts task at {datetime.now()}")
+            logger.info("=" * 60)
+            
+            count = await generate_drafts_stage(
+                batch_size=batch_size,
+                max_retries=max_retries
+            )
+            logger.info(f"Manual generate task completed: {count} drafts generated")
+        except Exception as e:
+            logger.error(f"Error in manual generate_drafts_task: {e}", exc_info=True)
+    
     def shutdown(self):
         """Clean shutdown"""
         logger.info("Shutting down scheduler...")
@@ -309,6 +522,7 @@ class PipelineDaemon:
         signal.signal(signal.SIGTERM, self.signal_handler)
         signal.signal(signal.SIGHUP, signal.SIG_IGN)  # Ignore SIGHUP (prevents exit when shell closes)
         self.setup_schedules()
+        self.start_api_server()  # Start API server
         logger.info("Starting pipeline daemon...")
         logger.info(f"PID: {os.getpid()}")
         logger.info(f"Log file: {self.log_file}")

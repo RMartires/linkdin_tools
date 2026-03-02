@@ -2,7 +2,7 @@
 
 # Global Browser Configuration
 browser:
-  headless: true  # Set to false to show browser windows (useful for debugging)
+  headless: false  # Set to false to show browser windows (useful for debugging)
 
 # Job Scraper Configuration
 scraper:
@@ -59,3 +59,9 @@ daemon:
   log_file: "logs/pipeline.log"
   pid_file: ".pipeline.pid"
   log_level: "INFO"
+
+# API Configuration
+api:
+  enabled: true  # Set to false to disable API server
+  port: 8000  # Port for API server
+  host: "127.0.0.1"  # Host for API server (use "0.0.0.0" to allow external access)
