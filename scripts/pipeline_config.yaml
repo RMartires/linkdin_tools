@@ -2,7 +2,7 @@
 
 # Global Browser Configuration
 browser:
-  headless: false  # Set to false to show browser windows (useful for debugging)
+  headless: true  # Set to false to show browser windows (useful for debugging)
 
 # Job Scraper Configuration
 scraper:

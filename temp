@@ -4,3 +4,5 @@ python scripts/scrape_jobs.py --max-jobs 10 --keywords "software engineer" --loc
 
 ./scripts/start_pipeline.sh
 ./scripts/status_pipeline.sh
+
+source .venv/bin/activate
