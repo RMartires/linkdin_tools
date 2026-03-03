@@ -1,23 +1,21 @@
-Role: You are an elite, "obsessed" software engineer applying for an engineering role at a high-growth startup. Your goal is to bypass HR and appeal directly to the founder's psychology.
+Role: You are an elite, "10x" software engineer and founding-engineer candidate. Your goal is to write a raw, high-intensity LinkedIn DM to a startup founder that signals technical mastery and absolute obsession with their specific mission.
 
-Instructions: Write a cold email to [Company Name] following these specific architectural rules:
+Instructions: Generate a short LinkedIn DM for [Founder Name] at [Company Name] adhering to the following "Signal-Over-Politeness" rules:
 
-The "Mission-First" Hook: Start the email by sliding into their mission immediately. Use a high-praise introductory line like "I love everything about what [Company Name] is doing" or "I love the story of how you're building ****". Focus on their story before yours.
+The "Mission Slide" Opening: Start immediately with "I love everything about what [Company Name] is doing". Do not use a generic greeting like "I hope you are well".
 
-Signal "Intensity" Over "Politeness": Avoid corporate fluff, generic greetings, or "I hope this finds you well." Use a raw, direct tone that signals obsession with building. Rebrand a lack of personal life as a competitive advantage by including a "no-hobbies" pitch: mention that you aren't athletic, can't sing, and don't drink—coding is the only thing you are genuinely good at.
+The "No-Hobbies" Psychological Signal: Include a self-deprecating but work-centric line that identifies you as a pure builder. State that you have "no hobbies outside coding," you are "not athletic," "don't drink," and "can't dance"—coding is the only thing you are genuinely good at. This rebrands a lack of balance as a competitive advantage for a startup.
 
-Keyword and Signal Precision: Do not just say you are "full-stack." Use high-signal keywords associated with modern, scalable startup architectures. Specifically mention experience with:
+High-Density Technical Signaling: Instead of generalities, list a precise stack to establish instant credibility. Mention your ability to work "across the stack" in "super lean teams" using Next.js, Python, Node, and Go-based services with GraphQL and gRPC (capitalized as GRPC for human-like imperfection).
 
-UI: Next.js and React.
+Proof of Impact: Briefly mention that you have "scaled internal micro-services to thousands of workflows and users".
 
-Backend: Python, Node.js, and services using GraphQL and gRPC, DBMS
+Intentional Imperfection: Use an informal, "raw" tone. Include one or two minor technical quirks (like "GRPC" or a missing capital letter) to ensure the message feels like it was written by a busy developer in the terminal, not an AI or recruiter.
 
-Infrastructure: Managing AWS and GCP over Kubernetes (K8s).
+Constraint & Ask: Keep the entire message between 60-75 words. End with a low-friction "win-win" ask, such as "If you're hiring, I'd love to align and chat about how I can help you ship".
 
-Impact: Claim experience scaling micro-services for thousands of workflows and users.
+Contextual Data to Include:
 
-The "Multiplier" Persona: Position yourself as an engineer who can work in "super lean teams" and ship end-to-end systems alone. Highlight impact and "contrarian views" rather than just listing daily activities.
+Target Mission: [Insert Company Mission]
 
-Intentional "Human" Imperfections: Use a slightly informal tone. You may include very minor technical capitalization quirks (e.g., "GRPC" instead of "gRPC") to make the email feel like it was written by a busy, brilliant engineer rather than a polished recruiter or an AI.
-
-The Simplified Ask: End with a "risk-reversal" or a low-friction request. Don't beg for a job or list demands; simply state you want to apply to this job and you would love to align and chat.
+Specific Technical Win:

@@ -1,4 +1,4 @@
-"""Draft generation stage - generates drafts for enriched jobs"""
+"""Draft generation stage - generates cold LinkedIn DM drafts for enriched jobs"""
 
 import asyncio
 import os
@@ -150,7 +150,7 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Generate drafts stage")
+    parser = argparse.ArgumentParser(description="Generate cold LinkedIn DM drafts for enriched jobs")
     parser.add_argument("--batch-size", type=int, default=10, help="Number of drafts to generate")
     parser.add_argument("--max-retries", type=int, default=3, help="Maximum retry attempts")
     

@@ -1,4 +1,4 @@
-"""Draft email generator for job applications"""
+"""Draft generator for cold LinkedIn DMs to startup founders"""
 
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ load_dotenv()
 
 
 class DraftGenerator:
-    """Generate cover email drafts for job applications"""
+    """Generate cold LinkedIn DM drafts for job applications"""
     
     def __init__(self, model: Optional[str] = None, db: Optional[Database] = None, resume_path: Optional[str] = None):
         """Initialize draft generator
@@ -129,8 +129,11 @@ class DraftGenerator:
         
         # System message: Use cold_email_soul.md
         if self.cold_email_soul:
-            # Replace [Company Name] placeholder with actual company name
-            system_content = self.cold_email_soul.replace("[Company Name]", research.company_name)
+            # Replace placeholders with actual values
+            system_content = (
+                self.cold_email_soul.replace("[Company Name]", research.company_name)
+                .replace("[Founder Name]", "the founder")
+            )
             messages.append({
                 "role": "system",
                 "content": system_content
@@ -139,7 +142,7 @@ class DraftGenerator:
             # Fallback if soul file not found
             messages.append({
                 "role": "system",
-                "content": "You are an elite software engineer applying for an engineering role. Write a compelling cold email."
+                "content": "You are an elite software engineer. Write a compelling cold LinkedIn DM to a startup founder."
             })
         
         # Collect company metadata (from Playwright researcher)
@@ -175,28 +178,41 @@ Job URL: {job.url}"""
         
         if job.description:
             job_details += f"\n\nJob Description:\n{job.description}"
+
+        # Target Mission: company mission/values for personalizing the opening
+        target_mission = (
+            research.linkedin_about_summary
+            or research.linkedin_page_summary
+            or research.website_summary
+            or ""
+        )[:600]
+
+        # Specific Technical Win: resume excerpt for model to extract relevant achievement
+        specific_technical_win = (resume_text[:800] + "...") if resume_text and len(resume_text) > 800 else (resume_text or "")
                 
-        # User message: Company research context
-        user_content = f"""Write a cold email to apply for this job:
+        # User message: LinkedIn DM context
+        user_content = f"""Write a short cold LinkedIn DM for the founder at {research.company_name} for this role:
 
 JOB DETAILS:
 {job_details}
 
-COMPANY RESEARCH:
+TARGET MISSION (use this to personalize the opening):
+{target_mission or company_info}
+
+SPECIFIC TECHNICAL WIN (draw from resume to establish credibility):
+{specific_technical_win}
+
+COMPANY RESEARCH (full context):
 {company_info}
 
 MY RESUME:
 {resume_text}
 
-The email should be ready to send - include a subject line and the email body. Format it as:
-
-Subject: [Your subject line]
-
-[Email body]"""
+Output ONLY the LinkedIn DM message body (60-75 words). No subject line, no greeting line—start with "I love everything about what [Company Name] is doing". Ready to paste into LinkedIn."""
         
         # Add examples if available
         if self.examples:
-            user_content += "\n\nEXAMPLES OF SIMILAR EMAILS:\n\n"
+            user_content += "\n\nEXAMPLES OF SIMILAR LINKEDIN DMs:\n\n"
             for i, example in enumerate(self.examples, 1):
                 user_content += f"Example {i}:\n{example}\n\n"
         
@@ -208,7 +224,7 @@ Subject: [Your subject line]
         return messages
     
     async def generate_draft(self, job: JobListing, research: CompanyResearch) -> Optional[GeneratedMessage]:
-        """Generate a cover email draft for a job
+        """Generate a cold LinkedIn DM draft for a job
         
         Args:
             job: JobListing object
@@ -232,7 +248,7 @@ Subject: [Your subject line]
         messages = self._build_messages(job, research, resume_text)
         
         try:
-            logger.info(f"Generating cover email draft for job: {job.title} at {job.company}")
+            logger.info(f"Generating cold LinkedIn DM for job: {job.title} at {job.company}")
             
             # Call OpenRouter API with structured messages
             response = self.client.chat.completions.create(
@@ -242,23 +258,18 @@ Subject: [Your subject line]
             )
             
             message_text = response.choices[0].message.content.strip()
-            
-            # Extract subject and body if formatted
-            subject = None
-            body = message_text
-            
-            if "Subject:" in message_text:
-                parts = message_text.split("Subject:", 1)
-                if len(parts) > 1:
-                    subject_line = parts[1].split("\n", 1)[0].strip()
-                    subject = subject_line
-                    body = parts[1].split("\n", 1)[1].strip() if len(parts[1].split("\n", 1)) > 1 else body
-            
+
+            # Strip any accidental Subject: line (legacy email format)
+            if "Subject:" in message_text and "\n\n" in message_text:
+                parts = message_text.split("\n\n", 1)
+                if len(parts) == 2 and "Subject:" in parts[0]:
+                    message_text = parts[1].strip()
+
             # Create GeneratedMessage
             generated_message = GeneratedMessage(
                 job_id=job.job_id or "",
                 message_text=message_text,
-                personalization_notes=f"Generated using company research summaries. Subject: {subject or 'Not extracted'}",
+                personalization_notes="Generated cold LinkedIn DM using company research and resume.",
                 status='pending'
             )
             
