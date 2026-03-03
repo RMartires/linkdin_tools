@@ -79,9 +79,9 @@ class CompanyResearcher:
         """
         try:
             # Create a fresh browser instance for this agent call to avoid session reset issues
-            # All browsers use the same user_data_dir so cookies are shared
+            # Use Playwright-based browser connection for better reliability (especially on Raspberry Pi)
             if not browser:
-                browser = self.session_manager.get_browser(headless=self.headless)
+                browser = await self.session_manager.get_browser_via_playwright(headless=self.headless)
             
             task_prompt = f"""
             Visit the following URL: {url}
@@ -157,9 +157,9 @@ class CompanyResearcher:
         """
         try:
             # Create a fresh browser instance for this agent call to avoid session reset issues
-            # All browsers use the same user_data_dir so cookies are shared
+            # Use Playwright-based browser connection for better reliability (especially on Raspberry Pi)
             if not browser:
-                browser = self.session_manager.get_browser(headless=self.headless)
+                browser = await self.session_manager.get_browser_via_playwright(headless=self.headless)
             
             task_prompt = f"""
             Visit the following LinkedIn company page: {linkedin_url}
