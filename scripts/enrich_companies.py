@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import Database
-from src.company_researcher import CompanyResearcher
+from src.company_researcher_playwright import CompanyResearcherPlaywright
 from src.models import CompanyResearch
 from src.utils.logger import logger
 from src.utils.config import load_pipeline_config, get_headless_mode
@@ -50,8 +50,8 @@ async def enrich_companies_stage(batch_size: int = 10, max_retries: int = 3):
         
         logger.info(f"Found {len(jobs)} jobs ready for enrichment")
         
-        # Initialize researcher with headless flag
-        researcher = CompanyResearcher(db=db, headless=headless)
+        # Initialize researcher with headless flag (Playwright-based, no browser-use)
+        researcher = CompanyResearcherPlaywright(db=db, headless=headless)
         
         enriched_count = 0
         failed_count = 0
