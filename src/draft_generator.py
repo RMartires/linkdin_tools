@@ -142,15 +142,29 @@ class DraftGenerator:
                 "content": "You are an elite software engineer applying for an engineering role. Write a compelling cold email."
             })
         
+        # Collect company metadata (from Playwright researcher)
+        meta_parts = []
+        if research.industry:
+            meta_parts.append(f"Industry: {research.industry}")
+        if research.size:
+            meta_parts.append(f"Company size: {research.size}")
+        if research.website:
+            meta_parts.append(f"Website: {research.website}")
+        if research.linkedin_url:
+            meta_parts.append(f"LinkedIn: {research.linkedin_url}")
+        company_meta = "\n".join(meta_parts) if meta_parts else ""
+
         # Collect available summaries
         summaries = []
+        if company_meta:
+            summaries.append(company_meta + "\n")
         if research.linkedin_page_summary:
             summaries.append(f"LinkedIn Company Page Summary:\n{research.linkedin_page_summary}\n")
         if research.linkedin_about_summary:
             summaries.append(f"LinkedIn About Page Summary:\n{research.linkedin_about_summary}\n")
         if research.website_summary:
             summaries.append(f"Company Website Summary:\n{research.website_summary}\n")
-        
+
         company_info = "\n".join(summaries)
         
         # Build job details
