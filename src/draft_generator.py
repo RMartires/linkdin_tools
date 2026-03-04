@@ -249,15 +249,22 @@ Output ONLY the LinkedIn DM message body (60-75 words). No subject line, no gree
         
         try:
             logger.info(f"Generating cold LinkedIn DM for job: {job.title} at {job.company}")
-            
+
+            # Log prompt sent to LLM
+            logger.info(f"LLM prompt: {messages}")
+
             # Call OpenRouter API with structured messages
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
             )
-            
-            message_text = response.choices[0].message.content.strip()
+
+            # Log response from LLM
+            raw_content = response.choices[0].message.content
+            logger.info(f"LLM response: {raw_content}")
+
+            message_text = raw_content.strip()
 
             # Strip any accidental Subject: line (legacy email format)
             if "Subject:" in message_text and "\n\n" in message_text:
