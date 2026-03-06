@@ -1,7 +1,7 @@
 """Pydantic models for LinkedIn job automation"""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, HttpUrl
 
 
@@ -59,6 +59,10 @@ class CompanyResearch(BaseModel):
     linkedin_page_summary: Optional[str] = Field(None, description="Summary of LinkedIn company page")
     linkedin_about_summary: Optional[str] = Field(None, description="Summary of LinkedIn about page")
     website_summary: Optional[str] = Field(None, description="Summary of company website")
+    key_contacts: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Company contacts (engineers, HR, hiring) from People page, max 2",
+    )
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:

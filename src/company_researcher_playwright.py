@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from src.models import CompanyResearch, JobListing
 from src.database import Database
@@ -54,6 +54,55 @@ class CompanyResearcherPlaywright:
             return url.replace("/life", "/about")
 
         return f"{url}/about"
+
+    def _get_linkedin_people_url(self, company_url: str) -> str:
+        """
+        Construct LinkedIn People page URL from company URL.
+
+        Args:
+            company_url: LinkedIn company page URL (e.g., https://www.linkedin.com/company/example)
+
+        Returns:
+            LinkedIn People page URL (e.g., https://www.linkedin.com/company/example/people)
+        """
+        url = company_url.rstrip("/")
+        if "/company/" in url:
+            parts = url.split("/company/")
+            if len(parts) > 1:
+                company_slug = parts[1].split("/")[0]
+                return f"https://www.linkedin.com/company/{company_slug}/people"
+        return f"{url}/people"
+
+    def _filter_key_contacts(
+        self,
+        people_list: List[Dict[str, Optional[str]]],
+        keywords: Optional[List[str]] = None,
+        max_results: int = 2,
+    ) -> List[Dict[str, Optional[str]]]:
+        """
+        Filter people by keywords in name or job_title, return up to max_results.
+
+        Args:
+            people_list: Full list of people from People you may know
+            keywords: Keywords to match (case-insensitive). Default: engineer, hr, hiring
+            max_results: Maximum number of contacts to return (default 2)
+
+        Returns:
+            List of matching people, max max_results items
+        """
+        if keywords is None:
+            keywords = ["engineer", "hr", "hiring"]
+        keywords_lower = [kw.lower() for kw in keywords]
+        matches: List[Dict[str, Optional[str]]] = []
+        for person in people_list:
+            if len(matches) >= max_results:
+                break
+            name = (person.get("name") or "").lower()
+            job_title = (person.get("job_title") or "").lower()
+            combined = f"{name} {job_title}"
+            if any(kw in combined for kw in keywords_lower):
+                matches.append(person)
+        return matches
 
     async def _get_page(self, headless: Optional[bool] = None):
         """Get or create a Playwright page"""
@@ -234,6 +283,129 @@ class CompanyResearcherPlaywright:
             logger.warning(f"Could not fetch website content from {website_url}: {e}")
             return None
 
+    async def _extract_people_cards(
+        self, section
+    ) -> List[Dict[str, Optional[str]]]:
+        """Extract people data from cards within the section. Used by _extract_people_you_may_know."""
+        people_list: List[Dict[str, Optional[str]]] = []
+        cards = section.locator("li.org-people-profile-card__profile-card-spacing")
+        card_count = await cards.count()
+
+        for i in range(card_count):
+            card = cards.nth(i)
+            name = None
+            job_title = None
+            profile_url = None
+
+            name_elem = card.locator("div.artdeco-entity-lockup__title a")
+            if await name_elem.count() > 0:
+                name = (await name_elem.inner_text()).strip()
+
+            subtitle_elem = card.locator(
+                "div.artdeco-entity-lockup__subtitle .lt-line-clamp"
+            )
+            if await subtitle_elem.count() > 0:
+                job_title = (await subtitle_elem.inner_text()).strip()
+
+            link_elem = card.locator('a[href*="linkedin.com/in/"]').first
+            if await link_elem.count() > 0:
+                href = await link_elem.get_attribute("href")
+                if href:
+                    profile_url = href.split("?")[0]
+
+            people_list.append(
+                {"name": name, "job_title": job_title, "profile_url": profile_url}
+            )
+
+        return people_list
+
+    async def _extract_people_you_may_know(
+        self, company_url: str
+    ) -> List[Dict[str, Optional[str]]]:
+        """
+        Scrape the "People you may know" section from a company's LinkedIn People page.
+        If "Show more results" button is present, clicks it up to 3 times to load more.
+
+        Args:
+            company_url: LinkedIn company page URL
+
+        Returns:
+            List of dicts with keys: name, job_title, profile_url
+        """
+        people_list: List[Dict[str, Optional[str]]] = []
+        seen_profile_urls: set = set()
+
+        try:
+            page = await self._get_page()
+            people_url = self._get_linkedin_people_url(company_url)
+            logger.info(f"Navigating to LinkedIn People page: {people_url}")
+
+            await page.goto(
+                people_url,
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            await asyncio.sleep(3)
+
+            # Wait for "People you may know" section
+            try:
+                section = page.locator(
+                    'div.org-people-profile-card__card-spacing:has(h2:has-text("People you may know"))'
+                )
+                await section.first.wait_for(state="visible", timeout=15000)
+            except Exception as e:
+                logger.warning(f"People you may know section not found: {e}")
+                return people_list
+
+            show_more_clicked = 0
+            max_show_more_clicks = 3
+
+            while True:
+                # Re-query section (DOM may have changed after "Show more" click)
+                section = page.locator(
+                    'div.org-people-profile-card__card-spacing:has(h2:has-text("People you may know"))'
+                )
+                if await section.count() == 0:
+                    break
+
+                # Extract cards and add only new entries (deduplicate by profile_url)
+                extracted = await self._extract_people_cards(section)
+                for person in extracted:
+                    profile_url = person.get("profile_url")
+                    if profile_url and profile_url not in seen_profile_urls:
+                        seen_profile_urls.add(profile_url)
+                        people_list.append(person)
+
+                # Stop if we've already clicked max times
+                if show_more_clicked >= max_show_more_clicks:
+                    break
+
+                # Look for "Show more results" button
+                show_more_btn = section.locator(
+                    'button:has-text("Show more results")'
+                ).first
+                if await show_more_btn.count() == 0 or not await show_more_btn.is_visible():
+                    break
+
+                logger.info(
+                    f"Clicking 'Show more results' ({show_more_clicked + 1}/{max_show_more_clicks})"
+                )
+                await show_more_btn.click()
+                await asyncio.sleep(5)
+                show_more_clicked += 1
+
+            logger.info(
+                f"✓ Extracted {len(people_list)} people from People you may know"
+            )
+
+        except Exception as e:
+            logger.warning(
+                f"Could not extract People you may know from {company_url}: {e}",
+                exc_info=True,
+            )
+
+        return people_list
+
     async def research_company(self, job: JobListing) -> CompanyResearch:
         """
         Research a company for a given job using Playwright to scrape LinkedIn About page.
@@ -305,6 +477,13 @@ class CompanyResearcherPlaywright:
                         logger.warning(f"Could not set website URL: {e}")
             else:
                 logger.warning("✗ Failed to extract LinkedIn About overview")
+
+            # Scrape People page - "People you may know" section
+            people_list = await self._extract_people_you_may_know(company_url)
+            key_contacts = self._filter_key_contacts(people_list)
+            if key_contacts:
+                research.key_contacts = key_contacts
+                logger.info(f"✓ Found {len(key_contacts)} key contacts (engineer/HR/hiring)")
 
             if self.db:
                 try:
