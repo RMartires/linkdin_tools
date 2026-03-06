@@ -231,7 +231,8 @@ Output ONLY the LinkedIn DM message body (60-75 words). No subject line, no gree
         resume_text: str,
     ) -> List[dict]:
         """Build messages for per-person draft with the custom template format."""
-        person_name = person.get("name") or "there"
+        full_name = person.get("name") or ""
+        person_name = full_name.split()[0] if full_name.strip() else "there"
         specific_technical_win = (
             (resume_text[:800] + "...") if resume_text and len(resume_text) > 800 else (resume_text or "")
         )
