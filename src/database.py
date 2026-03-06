@@ -194,10 +194,15 @@ class Database:
             message_dict = message.model_dump(exclude_none=True)
             message_dict["job_id"] = job_id
             message_dict["updated_at"] = datetime.utcnow()
-            
+            # Remove created_at from message_dict to avoid conflict with $setOnInsert
+            # created_at should only be set on insert, not on update
+            created_at_value = message_dict.pop("created_at", None)
+            if created_at_value is None:
+                created_at_value = datetime.utcnow()
+
             await self.db.messages.update_one(
                 {"job_id": job_id},
-                {"$set": message_dict, "$setOnInsert": {"created_at": datetime.utcnow()}},
+                {"$set": message_dict, "$setOnInsert": {"created_at": created_at_value}},
                 upsert=True
             )
             logger.info(f"Saved message for job {job_id}")

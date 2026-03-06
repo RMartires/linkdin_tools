@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -222,7 +222,60 @@ Output ONLY the LinkedIn DM message body (60-75 words). No subject line, no gree
         })
         
         return messages
-    
+
+    def _build_messages_for_person(
+        self,
+        person: Dict[str, Any],
+        job: JobListing,
+        research: CompanyResearch,
+        resume_text: str,
+    ) -> List[dict]:
+        """Build messages for per-person draft with the custom template format."""
+        person_name = person.get("name") or "there"
+        specific_technical_win = (
+            (resume_text[:800] + "...") if resume_text and len(resume_text) > 800 else (resume_text or "")
+        )
+
+        user_content = f"""Write a short cold LinkedIn DM for {person_name} at {research.company_name}.
+
+Use this EXACT structure (fill in the bracketed parts):
+
+Hey {person_name},
+I love everything about what {research.company_name} is doing, would love to give an interview
+
+[Write 1-2 sentences here: extract your most relevant technical achievement from the resume below - e.g. "I've scaled internal services to thousands of workflows and users, launching a Shopify app to 10k MAUs and handling 100M+ events/day."]
+
+I applied to the {job.title} role, could you refer me?
+
+RESUME (extract technical win from here):
+{resume_text}
+
+Output ONLY the LinkedIn DM message body. No extra text. Use the exact greeting "Hey {person_name}," and exact closing "I applied to the {job.title} role, could you refer me?" Fill the middle with 1-2 sentences from the resume."""
+        return [
+            {"role": "system", "content": "You are an elite software engineer. Write a concise, high-signal LinkedIn DM. Extract specific technical achievements from the resume."},
+            {"role": "user", "content": user_content},
+        ]
+
+    def _generate_draft_for_person(
+        self,
+        person: Dict[str, Any],
+        job: JobListing,
+        research: CompanyResearch,
+        resume_text: str,
+    ) -> Optional[str]:
+        """Generate a single draft message for one key contact. Returns message text or None."""
+        try:
+            messages = self._build_messages_for_person(person, job, research, resume_text)
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.5,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"Failed to generate draft for {person.get('name', 'unknown')}: {e}")
+            return None
+
     async def generate_draft(self, job: JobListing, research: CompanyResearch) -> Optional[GeneratedMessage]:
         """Generate a cold LinkedIn DM draft for a job
         
@@ -243,46 +296,61 @@ Output ONLY the LinkedIn DM message body (60-75 words). No subject line, no gree
         if not resume_text:
             logger.error("Could not read resume PDF. Cannot generate draft without resume.")
             return None
-        
-        # Build structured messages
+
+        # If key_contacts exist, generate one draft per person
+        if research.key_contacts and len(research.key_contacts) > 0:
+            personalized_drafts: List[Dict[str, Any]] = []
+            for person in research.key_contacts:
+                msg_text = self._generate_draft_for_person(person, job, research, resume_text)
+                if msg_text:
+                    personalized_drafts.append({
+                        "name": person.get("name"),
+                        "profile_url": person.get("profile_url"),
+                        "message_text": msg_text,
+                    })
+                    logger.info(f"Generated draft for {person.get('name', 'unknown')}")
+
+            if not personalized_drafts:
+                logger.warning("No personalized drafts generated from key_contacts, falling back to generic")
+                # Fall through to generic draft
+            else:
+                # Combine messages with \n\n for display; first draft as message_text for backward compat
+                combined_message = "\n\n".join(d["message_text"] for d in personalized_drafts)
+                return GeneratedMessage(
+                    job_id=job.job_id or "",
+                    message_text=personalized_drafts[0]["message_text"],
+                    personalization_notes=f"Generated {len(personalized_drafts)} personalized drafts for key contacts.",
+                    personalized_drafts=personalized_drafts,
+                    status="pending",
+                )
+
+        # Generic draft (no key_contacts or fallback)
         messages = self._build_messages(job, research, resume_text)
-        
+
         try:
             logger.info(f"Generating cold LinkedIn DM for job: {job.title} at {job.company}")
 
-            # Log prompt sent to LLM
-            logger.info(f"LLM prompt: {messages}")
-
-            # Call OpenRouter API with structured messages
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
             )
 
-            # Log response from LLM
             raw_content = response.choices[0].message.content
-            logger.info(f"LLM response: {raw_content}")
-
             message_text = raw_content.strip()
 
-            # Strip any accidental Subject: line (legacy email format)
             if "Subject:" in message_text and "\n\n" in message_text:
                 parts = message_text.split("\n\n", 1)
                 if len(parts) == 2 and "Subject:" in parts[0]:
                     message_text = parts[1].strip()
 
-            # Create GeneratedMessage
-            generated_message = GeneratedMessage(
+            return GeneratedMessage(
                 job_id=job.job_id or "",
                 message_text=message_text,
                 personalization_notes="Generated cold LinkedIn DM using company research and resume.",
-                status='pending'
+                status="pending",
             )
-            
-            logger.info(f"Successfully generated draft for job {job.job_id}")
-            return generated_message
-            
+
         except Exception as e:
             logger.error(f"Error generating draft for job {job.job_id}: {e}", exc_info=True)
             return None

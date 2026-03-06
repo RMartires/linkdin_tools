@@ -80,6 +80,7 @@ async def enrich_companies_stage(batch_size: int = 10, max_retries: int = 3):
                         linkedin_page_summary=existing_research.linkedin_page_summary,
                         linkedin_about_summary=existing_research.linkedin_about_summary,
                         website_summary=existing_research.website_summary,
+                        key_contacts=existing_research.key_contacts,
                         created_at=existing_research.created_at
                     )
                     # Save with new job_id

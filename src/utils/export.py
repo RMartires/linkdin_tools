@@ -98,20 +98,30 @@ class Exporter:
             'Recent News',
             'Tech Stack',
             'Message',
+            'Custom Message',
+            'Profile Link',
             'Message Status',
             'Created At'
         ]
-        
+
+        def _get_custom_message_and_profile_link(msg):
+            if not msg or not msg.personalized_drafts:
+                return '', ''
+            custom = "\n\n".join(d.get("message_text", "") or "" for d in msg.personalized_drafts)
+            profile = "\n\n".join(d.get("profile_url", "") or "" for d in msg.personalized_drafts)
+            return custom, profile
+
         filepath = Path(filename)
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            
+
             for pipeline in pipelines:
                 job = pipeline.job
                 research = pipeline.research
                 message = pipeline.message
-                
+                custom_msg, profile_link = _get_custom_message_and_profile_link(message)
+
                 row = {
                     'Job ID': job.job_id or '',
                     'Job Title': job.title,
@@ -125,6 +135,8 @@ class Exporter:
                     'Recent News': '; '.join(research.recent_news[:3]) if research and research.recent_news else '',
                     'Tech Stack': ', '.join(research.tech_stack) if research and research.tech_stack else '',
                     'Message': message.message_text if message else '',
+                    'Custom Message': custom_msg,
+                    'Profile Link': profile_link,
                     'Message Status': message.status if message else '',
                     'Created At': job.created_at.isoformat() if job.created_at else ''
                 }

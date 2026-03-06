@@ -78,6 +78,10 @@ class GeneratedMessage(BaseModel):
     job_id: str = Field(..., description="Associated job ID")
     message_text: str = Field(..., description="Generated message content")
     personalization_notes: Optional[str] = Field(None, description="Notes on personalization")
+    personalized_drafts: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Per-contact drafts: [{name, profile_url, message_text}, ...]",
+    )
     status: str = Field(default="pending", description="Message status (pending/reviewed/approved)")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

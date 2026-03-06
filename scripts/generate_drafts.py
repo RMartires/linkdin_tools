@@ -115,7 +115,8 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
                                 update_draft_in_latest_worksheet,
                                 spreadsheet_id,
                                 job.job_id,
-                                draft.message_text,  # Use actual draft text instead of "Yes"
+                                draft.message_text,
+                                draft.personalized_drafts,
                             )
                     except Exception as e:
                         logger.warning(f"Google Sheets sync failed (non-fatal): {e}")
