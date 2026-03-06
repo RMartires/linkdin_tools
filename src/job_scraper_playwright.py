@@ -15,6 +15,9 @@ from src.utils.logger import logger
 
 load_dotenv()
 
+# Job title words to exclude (case-insensitive). Jobs with these in the title are skipped.
+JOB_TITLE_EXCLUDED_WORDS = ["Frontend", "Ops"]
+
 
 class JobScraperPlaywright:
     """Scrape LinkedIn jobs using Playwright"""
@@ -798,7 +801,37 @@ class JobScraperPlaywright:
         except Exception as e:
             logger.debug(f"Error checking if card is valid: {e}")
             return False
-    
+
+    async def _has_easy_apply(self, card_element) -> bool:
+        """Check if a job card has the Easy Apply badge/text (only save Easy Apply jobs)."""
+        try:
+            text = await card_element.inner_text()
+            return "Easy Apply" in text
+        except Exception as e:
+            logger.debug(f"Error checking Easy Apply: {e}")
+            return False
+
+    def _title_contains_excluded_word(self, title: str) -> bool:
+        """Check if job title contains any excluded word (case-insensitive)."""
+        if not title:
+            return False
+        title_lower = title.lower()
+        return any(word.lower() in title_lower for word in JOB_TITLE_EXCLUDED_WORDS)
+
+    async def _click_next_page(self, page) -> bool:
+        """Click the Next pagination button if visible. Returns True if clicked, False if not found."""
+        # Next button: data-testid="pagination-controls-next-button-visible" when more pages exist
+        next_btn = await page.query_selector('button[data-testid="pagination-controls-next-button-visible"]')
+        if not next_btn:
+            return False
+        try:
+            await next_btn.click()
+            await asyncio.sleep(2)  # Wait for new page to load
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to click Next button: {e}")
+            return False
+
     async def _scroll_job_list(self, page, max_results: int):
         """Scroll through job list to load more jobs using correct selectors"""
         logger.info(f"Scrolling job list to load at least {max_results} jobs...")
@@ -1833,299 +1866,301 @@ class JobScraperPlaywright:
             # Apply filters if provided
             if experience_level or job_type:
                 await self._apply_filters(page, experience_level, job_type)
-            
-            # Scroll to load more jobs
-            await self._scroll_job_list(page, max_results)
-            
-            # Extract job data
-            logger.info("Extracting job data from cards...")
-            list_items = []  # Initialize list_items
-            
+
             # Find the frame that contains job cards (iframes are common)
             target_frame = await self._find_target_frame(page)
             extraction_page = target_frame if target_frame else page
             if target_frame:
                 logger.debug("Using iframe for job extraction")
-            
-            # Try using browser context evaluation (more reliable for dynamic content)
-            # Check for both new UI and old UI structures
-            try:
-                # Check for new UI first
-                new_ui_count = await extraction_page.evaluate('document.querySelectorAll("[data-view-name=\\"job-search-job-card\\"]").length')
-                old_ui_count = await extraction_page.evaluate('document.querySelectorAll("[data-job-id]").length')
-                
-                logger.info(f"Browser context check: Found {new_ui_count} NEW UI cards, {old_ui_count} OLD UI cards")
-                
-                if new_ui_count > 0:
-                    # New UI: Get all div[data-view-name="job-search-job-card"] elements
-                    logger.debug("Using NEW UI structure (div-based)")
-                    new_ui_cards = await extraction_page.query_selector_all('div[data-view-name="job-search-job-card"]')
-                    logger.info(f"Found {len(new_ui_cards)} job cards using NEW UI structure")
-                    list_items = new_ui_cards
-                elif old_ui_count > 0:
-                    # Old UI: Get all li elements and check which ones contain job cards
-                    logger.debug("Using OLD UI structure (li-based)")
-                    all_lis = await extraction_page.query_selector_all('li')
-                    logger.debug(f"Checking {len(all_lis)} li elements for job cards...")
-                    
-                    # Use browser evaluation to check which li elements contain job cards
-                    valid_li_indices = await extraction_page.evaluate('''
-                        () => {
-                            const cards = document.querySelectorAll('[data-job-id]');
-                            const allLis = document.querySelectorAll('li');
-                            const validIndices = new Set();
-                            
-                            cards.forEach(card => {
-                                let parent = card.parentElement;
-                                while (parent) {
-                                    if (parent.tagName === 'LI') {
-                                        const index = Array.from(allLis).indexOf(parent);
-                                        if (index >= 0) {
-                                            validIndices.add(index);
-                                        }
-                                        break;
-                                    }
-                                    parent = parent.parentElement;
-                                }
-                            });
-                            
-                            return Array.from(validIndices);
-                        }
-                    ''')
-                    
-                    logger.debug(f"Found {len(valid_li_indices)} li elements containing job cards")
-                    for idx in valid_li_indices:
-                        if idx < len(all_lis):
-                            list_items.append(all_lis[idx])
-                    
-                    if list_items:
-                        logger.debug(f"Successfully found {len(list_items)} list items via browser context evaluation")
-            except Exception as e:
-                logger.warning(f"Browser context evaluation failed: {e}", exc_info=True)
-            
-            # Fallback to standard selectors if browser context didn't work
-            if not list_items:
-                # Try new UI selectors first
-                try:
-                    new_ui_cards = await extraction_page.query_selector_all('div[data-view-name="job-search-job-card"]')
-                    if new_ui_cards:
-                        logger.info(f"Found {len(new_ui_cards)} job cards using NEW UI fallback selector")
-                        list_items = new_ui_cards
-                except:
-                    pass
-                
-                # Then try old UI selectors
-                if not list_items:
-                    list_item_selectors = [
-                        'li.scaffold-layout__list-item',  # Double underscore
-                        'li.scaffold-layout_list-item',  # Single underscore variant
-                        'li[data-occludable-job-id]',  # By data attribute
-                        'li[class*="scaffold-layout__list-item"]',  # Double underscore partial match
-                        'li[class*="scaffold-layout_list-item"]',  # Single underscore partial match
-                    ]
-                    
-                    for selector in list_item_selectors:
-                        try:
-                            items = await extraction_page.query_selector_all(selector)
-                            if items:
-                                logger.info(f"Found {len(items)} list items using OLD UI selector: {selector}")
-                                list_items = items
-                                break
-                        except Exception as e:
-                            logger.debug(f"Selector '{selector}' failed: {e}")
-                            continue
-            
-            if not list_items:
-                logger.debug("No list items found with standard selectors. Trying fallback...")
-                # Fallback: try to find new UI cards first, then old UI
-                try:
-                    # Try new UI
-                    new_ui_cards = await extraction_page.query_selector_all('div[data-view-name="job-search-job-card"]')
-                    if new_ui_cards:
-                        logger.debug(f"Found {len(new_ui_cards)} NEW UI cards in fallback")
-                        list_items = new_ui_cards
-                    else:
-                        # Try old UI
-                        all_lis = await extraction_page.query_selector_all('li')
-                        logger.debug(f"Found {len(all_lis)} total <li> elements, checking for job cards...")
-                        for li in all_lis:
-                            try:
-                                has_job_id = await li.query_selector('[data-job-id]')
-                                has_occludable = await li.get_attribute('data-occludable-job-id')
-                                
-                                if has_job_id or has_occludable:
-                                    # Verify it's a real job card by checking for title link
-                                    title_link = await li.query_selector('a.job-card-container__link, a[href*="/jobs/view/"]')
-                                    if title_link:
-                                        list_items.append(li)
-                            except:
-                                pass
-                        logger.debug(f"Found {len(list_items)} list items with job data after fallback")
-                except Exception as e:
-                    logger.debug(f"Fallback failed: {e}")
-            
-            logger.info(f"Found {len(list_items)} job cards to extract")
-            
+
             job_listings = []
-            extracted_job_ids = set()  # Track extracted job IDs to avoid duplicates
-            
-            for i, list_item in enumerate(list_items):
-                if len(job_listings) >= max_results:
-                    break
-                
-                # Skip placeholder items
-                # Debug: Check what's in the card
+            extracted_job_ids = set()
+            page_num = 1
+
+            while True:
+                # Scroll to load jobs on current page
+                await self._scroll_job_list(page, max_results)
+
+                # Extract job data - get list of cards
+                logger.info(f"Extracting job data from page {page_num}...")
+                list_items = []
+
+                # Try using browser context evaluation (more reliable for dynamic content)
                 try:
-                    view_name = await list_item.get_attribute('data-view-name')
-                    has_button = await list_item.query_selector('div[role="button"]')
-                    link_count = len(await list_item.query_selector_all('a'))
-                    logger.debug(f"Card {i+1} check: view_name={view_name}, has_button={has_button is not None}, link_count={link_count}")
-                except:
-                    pass
-                
-                is_valid = await self._is_valid_job_card(list_item)
-                if not is_valid:
-                    logger.warning(f"Skipping card {i+1}/{len(list_items)}: not a valid job card (view_name={view_name if 'view_name' in locals() else 'unknown'})")
-                    continue
-                
-                logger.info(f"Processing card {i+1}/{len(list_items)}...")
-                
-                # Debug: Check what's actually in the card using browser evaluation
-                try:
-                    card_info = await extraction_page.evaluate('''(element) => {
-                        const viewName = element.getAttribute('data-view-name');
-                        const links = element.querySelectorAll('a');
-                        const linkHrefs = Array.from(links).map(a => a.getAttribute('href')).filter(Boolean);
-                        const jobLinks = linkHrefs.filter(href => href.includes('/jobs/view/'));
-                        return {
-                            viewName: viewName,
-                            totalLinks: links.length,
-                            jobLinks: jobLinks.length,
-                            firstJobLink: jobLinks[0] || null
-                        };
-                    }''', list_item)
-                    logger.info(f"Card {i+1} debug info: {card_info}")
+                    # Check for new UI first
+                    new_ui_count = await extraction_page.evaluate('document.querySelectorAll("[data-view-name=\\"job-search-job-card\\"]").length')
+                    old_ui_count = await extraction_page.evaluate('document.querySelectorAll("[data-job-id]").length')
+
+                    logger.info(f"Browser context check: Found {new_ui_count} NEW UI cards, {old_ui_count} OLD UI cards")
+
+                    if new_ui_count > 0:
+                        # New UI: Get all div[data-view-name="job-search-job-card"] elements
+                        logger.debug("Using NEW UI structure (div-based)")
+                        new_ui_cards = await extraction_page.query_selector_all('div[data-view-name="job-search-job-card"]')
+                        logger.info(f"Found {len(new_ui_cards)} job cards using NEW UI structure")
+                        list_items = new_ui_cards
+                    elif old_ui_count > 0:
+                        # Old UI: Get all li elements and check which ones contain job cards
+                        logger.debug("Using OLD UI structure (li-based)")
+                        all_lis = await extraction_page.query_selector_all('li')
+                        logger.debug(f"Checking {len(all_lis)} li elements for job cards...")
+
+                        valid_li_indices = await extraction_page.evaluate('''
+                            () => {
+                                const cards = document.querySelectorAll('[data-job-id]');
+                                const allLis = document.querySelectorAll('li');
+                                const validIndices = new Set();
+                                cards.forEach(card => {
+                                    let parent = card.parentElement;
+                                    while (parent) {
+                                        if (parent.tagName === 'LI') {
+                                            const index = Array.from(allLis).indexOf(parent);
+                                            if (index >= 0) validIndices.add(index);
+                                            break;
+                                        }
+                                        parent = parent.parentElement;
+                                    }
+                                });
+                                return Array.from(validIndices);
+                            }
+                        ''')
+
+                        logger.debug(f"Found {len(valid_li_indices)} li elements containing job cards")
+                        for idx in valid_li_indices:
+                            if idx < len(all_lis):
+                                list_items.append(all_lis[idx])
+
+                        if list_items:
+                            logger.debug(f"Successfully found {len(list_items)} list items via browser context evaluation")
                 except Exception as e:
-                    logger.debug(f"Could not evaluate card {i+1}: {e}")
-                
-                # NEW APPROACH: Click first, then extract from right panel
-                # Since links aren't accessible in card elements, we click to open the panel
-                # and extract everything from there
-                click_context = extraction_page if target_frame else page
-                logger.info(f"Clicking card {i+1} to open details panel...")
-                
-                # Store current URL to detect changes
-                current_url_before = page.url
-                
-                try:
-                    # Click the card to open the right panel
-                    click_success = await self._click_job_card(click_context, list_item, main_page=page)
-                    if not click_success:
-                        logger.warning(f"Failed to click card {i+1}, skipping...")
-                        continue
-                    
-                    # Wait a moment for the click to register and panel to start loading
-                    await asyncio.sleep(2)  # Give panel time to start loading after click
-                    
-                    # Wait for URL to update with currentJobId (indicates panel loaded)
-                    logger.debug("Waiting for URL to update with job ID...")
+                    logger.warning(f"Browser context evaluation failed: {e}", exc_info=True)
+
+                # Fallback to standard selectors if browser context didn't work
+                if not list_items:
+                    # Try new UI selectors first
                     try:
-                        await page.wait_for_function(
-                            '() => window.location.href.includes("currentJobId")',
-                            timeout=5000
-                        )
-                        await asyncio.sleep(2)  # Give panel additional time to fully load
+                        new_ui_cards = await extraction_page.query_selector_all('div[data-view-name="job-search-job-card"]')
+                        if new_ui_cards:
+                            logger.info(f"Found {len(new_ui_cards)} job cards using NEW UI fallback selector")
+                            list_items = new_ui_cards
                     except:
-                        logger.debug("URL didn't update with currentJobId, but continuing...")
-                    
-                    # Extract job ID from URL
-                    current_url_after = page.url
-                    job_id = self._extract_job_id(current_url_after)
-                    
-                    if not job_id:
-                        logger.warning(f"Could not extract job ID from URL after clicking card {i+1}: {current_url_after}")
-                        # Try to extract from URL params
-                        if 'currentJobId' in current_url_after:
-                            import urllib.parse
-                            parsed = urllib.parse.urlparse(current_url_after)
-                            params = urllib.parse.parse_qs(parsed.query)
-                            if 'currentJobId' in params:
-                                job_id = params['currentJobId'][0]
-                    
-                    if not job_id:
-                        logger.warning(f"Skipping card {i+1}: could not extract job ID")
-                        continue
-                    
-                    # Skip if we've already extracted this job ID
-                    if job_id in extracted_job_ids:
-                        logger.debug(f"Skipping duplicate job ID: {job_id}")
-                        continue
-                    extracted_job_ids.add(job_id)
-                    
-                    logger.info(f"✓ Extracted job ID {job_id} from URL after clicking card {i+1}")
-                    
-                    # Now extract all data from the right panel
-                    job_data = await self._extract_job_data_from_panel(page, job_id)
-                    
-                    if not job_data:
-                        logger.warning(f"Could not extract job data from panel for job {job_id}")
-                        continue
-                    
-                    logger.info(f"✓ Successfully extracted job {i+1}: {job_data.get('title', 'Unknown')} (ID: {job_id})")
-                    
-                    # Extract company URL from the panel
-                    company_url = await self._extract_company_url_from_details_panel(page)
-                    if company_url:
-                        logger.info(f"✓ Successfully extracted company URL: {company_url}")
-                    else:
-                        logger.warning(f"✗ Could not extract company URL from details panel")
-                    
-                    # Initialize posted_date before conditional assignment
-                    posted_date = None
-                    if job_data.get('posted_date'):
-                        try:
-                            # Try to parse relative dates like "2 days ago"
-                            date_str = job_data['posted_date'].lower()
-                            if 'ago' in date_str or 'day' in date_str:
-                                # For now, just store as string
-                                # Could implement proper parsing later
-                                posted_date = None
-                            else:
-                                # Try ISO format or other formats
-                                posted_date = datetime.fromisoformat(job_data['posted_date'])
-                        except:
-                            posted_date = None
-                    
-                    # Set defaults for missing fields
-                    experience_level_val = None  # Could extract from panel if needed
-                    job_type_val = None  # Could extract from panel if needed
-                    
+                        pass
+
+                    # Then try old UI selectors
+                    if not list_items:
+                        list_item_selectors = [
+                            'li.scaffold-layout__list-item',
+                            'li.scaffold-layout_list-item',
+                            'li[data-occludable-job-id]',
+                            'li[class*="scaffold-layout__list-item"]',
+                            'li[class*="scaffold-layout_list-item"]',
+                        ]
+
+                        for selector in list_item_selectors:
+                            try:
+                                items = await extraction_page.query_selector_all(selector)
+                                if items:
+                                    logger.info(f"Found {len(items)} list items using OLD UI selector: {selector}")
+                                    list_items = items
+                                    break
+                            except Exception as e:
+                                logger.debug(f"Selector '{selector}' failed: {e}")
+                                continue
+
+                if not list_items:
+                    logger.debug("No list items found with standard selectors. Trying fallback...")
                     try:
-                        logger.debug(f"Creating JobListing for job {job_id} with company_url: {company_url}")
-                        job_listing = JobListing(
-                            job_id=job_id,
-                            title=job_data.get('title', ''),
-                            company=job_data.get('company', ''),
-                            url=job_data.get('url', 'https://www.linkedin.com/jobs'),
-                            company_url=company_url,
-                            location=job_data.get('location'),
-                            description=None,  # Could be extracted by clicking into job details
-                            posted_date=posted_date,
-                            skills=[],
-                            experience_level=experience_level_val,
-                            job_type=job_type_val,
-                            status='pending'
-                        )
-                        logger.info(f"Created JobListing for '{job_listing.title}' at '{job_listing.company}' - company_url: {job_listing.company_url}")
-                        job_listings.append(job_listing)
+                        new_ui_cards = await extraction_page.query_selector_all('div[data-view-name="job-search-job-card"]')
+                        if new_ui_cards:
+                            logger.debug(f"Found {len(new_ui_cards)} NEW UI cards in fallback")
+                            list_items = new_ui_cards
+                        else:
+                            all_lis = await extraction_page.query_selector_all('li')
+                            logger.debug(f"Found {len(all_lis)} total <li> elements, checking for job cards...")
+                            for li in all_lis:
+                                try:
+                                    has_job_id = await li.query_selector('[data-job-id]')
+                                    has_occludable = await li.get_attribute('data-occludable-job-id')
+                                    if has_job_id or has_occludable:
+                                        title_link = await li.query_selector('a.job-card-container__link, a[href*="/jobs/view/"]')
+                                        if title_link:
+                                            list_items.append(li)
+                                except:
+                                    pass
+                            logger.debug(f"Found {len(list_items)} list items with job data after fallback")
                     except Exception as e:
-                        logger.error(f"Error creating JobListing from data: {e}", exc_info=True)
+                        logger.debug(f"Fallback failed: {e}")
+
+                if not list_items:
+                    logger.info("No job cards found on this page, stopping")
+                    break
+
+                logger.info(f"Found {len(list_items)} job cards to extract on page {page_num}")
+
+                for i, list_item in enumerate(list_items):
+                    if len(job_listings) >= max_results:
+                        break
+
+                    # Skip placeholder items
+                    try:
+                        view_name = await list_item.get_attribute('data-view-name')
+                        has_button = await list_item.query_selector('div[role="button"]')
+                        link_count = len(await list_item.query_selector_all('a'))
+                        logger.debug(f"Card {i+1} check: view_name={view_name}, has_button={has_button is not None}, link_count={link_count}")
+                    except:
+                        pass
+
+                    is_valid = await self._is_valid_job_card(list_item)
+                    if not is_valid:
+                        logger.warning(f"Skipping card {i+1}/{len(list_items)}: not a valid job card (view_name={view_name if 'view_name' in locals() else 'unknown'})")
                         continue
-                    
-                except Exception as e:
-                    logger.error(f"Error processing card {i+1}: {e}", exc_info=True)
-                    continue
-            
+
+                    # Only process jobs with Easy Apply
+                    if not await self._has_easy_apply(list_item):
+                        logger.debug(f"Skipping card {i+1}/{len(list_items)}: no Easy Apply")
+                        continue
+
+                    logger.info(f"Processing card {i+1}/{len(list_items)}...")
+
+                    # Debug: Check what's actually in the card using browser evaluation
+                    try:
+                        card_info = await extraction_page.evaluate('''(element) => {
+                            const viewName = element.getAttribute('data-view-name');
+                            const links = element.querySelectorAll('a');
+                            const linkHrefs = Array.from(links).map(a => a.getAttribute('href')).filter(Boolean);
+                            const jobLinks = linkHrefs.filter(href => href.includes('/jobs/view/'));
+                            return {
+                                viewName: viewName,
+                                totalLinks: links.length,
+                                jobLinks: jobLinks.length,
+                                firstJobLink: jobLinks[0] || null
+                            };
+                        }''', list_item)
+                        logger.info(f"Card {i+1} debug info: {card_info}")
+                    except Exception as e:
+                        logger.debug(f"Could not evaluate card {i+1}: {e}")
+
+                    # NEW APPROACH: Click first, then extract from right panel
+                    click_context = extraction_page if target_frame else page
+                    logger.info(f"Clicking card {i+1} to open details panel...")
+
+                    current_url_before = page.url
+
+                    try:
+                        # Click the card to open the right panel
+                        click_success = await self._click_job_card(click_context, list_item, main_page=page)
+                        if not click_success:
+                            logger.warning(f"Failed to click card {i+1}, skipping...")
+                            continue
+
+                        await asyncio.sleep(2)  # Give panel time to start loading after click
+
+                        logger.debug("Waiting for URL to update with job ID...")
+                        try:
+                            await page.wait_for_function(
+                                '() => window.location.href.includes("currentJobId")',
+                                timeout=5000
+                            )
+                            await asyncio.sleep(2)  # Give panel additional time to fully load
+                        except:
+                            logger.debug("URL didn't update with currentJobId, but continuing...")
+
+                        current_url_after = page.url
+                        job_id = self._extract_job_id(current_url_after)
+
+                        if not job_id:
+                            logger.warning(f"Could not extract job ID from URL after clicking card {i+1}: {current_url_after}")
+                            if 'currentJobId' in current_url_after:
+                                import urllib.parse
+                                parsed = urllib.parse.urlparse(current_url_after)
+                                params = urllib.parse.parse_qs(parsed.query)
+                                if 'currentJobId' in params:
+                                    job_id = params['currentJobId'][0]
+
+                        if not job_id:
+                            logger.warning(f"Skipping card {i+1}: could not extract job ID")
+                            continue
+
+                        if job_id in extracted_job_ids:
+                            logger.debug(f"Skipping duplicate job ID: {job_id}")
+                            continue
+                        extracted_job_ids.add(job_id)
+
+                        logger.info(f"✓ Extracted job ID {job_id} from URL after clicking card {i+1}")
+
+                        job_data = await self._extract_job_data_from_panel(page, job_id)
+
+                        if not job_data:
+                            logger.warning(f"Could not extract job data from panel for job {job_id}")
+                            continue
+
+                        # Skip if title contains excluded words (e.g. Frontend)
+                        title = job_data.get('title', '')
+                        if self._title_contains_excluded_word(title):
+                            logger.debug(f"Skipping job {job_id}: title '{title}' contains excluded word")
+                            continue
+
+                        logger.info(f"✓ Successfully extracted job {i+1}: {job_data.get('title', 'Unknown')} (ID: {job_id})")
+
+                        company_url = await self._extract_company_url_from_details_panel(page)
+                        if company_url:
+                            logger.info(f"✓ Successfully extracted company URL: {company_url}")
+                        else:
+                            logger.warning(f"✗ Could not extract company URL from details panel")
+
+                        posted_date = None
+                        if job_data.get('posted_date'):
+                            try:
+                                date_str = job_data['posted_date'].lower()
+                                if 'ago' in date_str or 'day' in date_str:
+                                    posted_date = None
+                                else:
+                                    posted_date = datetime.fromisoformat(job_data['posted_date'])
+                            except:
+                                posted_date = None
+
+                        experience_level_val = None
+                        job_type_val = None
+
+                        try:
+                            logger.debug(f"Creating JobListing for job {job_id} with company_url: {company_url}")
+                            job_listing = JobListing(
+                                job_id=job_id,
+                                title=job_data.get('title', ''),
+                                company=job_data.get('company', ''),
+                                url=job_data.get('url', 'https://www.linkedin.com/jobs'),
+                                company_url=company_url,
+                                location=job_data.get('location'),
+                                description=None,
+                                posted_date=posted_date,
+                                skills=[],
+                                experience_level=experience_level_val,
+                                job_type=job_type_val,
+                                status='pending'
+                            )
+                            logger.info(f"Created JobListing for '{job_listing.title}' at '{job_listing.company}' - company_url: {job_listing.company_url}")
+                            job_listings.append(job_listing)
+                        except Exception as e:
+                            logger.error(f"Error creating JobListing from data: {e}", exc_info=True)
+                            continue
+
+                    except Exception as e:
+                        logger.error(f"Error processing card {i+1}: {e}", exc_info=True)
+                        continue
+
+                # After processing all cards on this page - check if we need next page
+                if len(job_listings) >= max_results:
+                    logger.info(f"Reached target of {max_results} jobs")
+                    break
+
+                # Try to go to next page
+                if await self._click_next_page(page):
+                    page_num += 1
+                    logger.info(f"Navigating to page {page_num}...")
+                else:
+                    logger.info("No Next button found, stopping pagination")
+                    break
+
             logger.info(f"Successfully scraped {len(job_listings)} jobs")
             return job_listings
             
