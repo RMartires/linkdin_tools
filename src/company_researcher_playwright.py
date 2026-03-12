@@ -479,11 +479,11 @@ class CompanyResearcherPlaywright:
                 logger.warning("✗ Failed to extract LinkedIn About overview")
 
             # Scrape People page - "People you may know" section
-            people_list = await self._extract_people_you_may_know(company_url)
-            key_contacts = self._filter_key_contacts(people_list)
-            if key_contacts:
-                research.key_contacts = key_contacts
-                logger.info(f"✓ Found {len(key_contacts)} key contacts (engineer/HR/hiring)")
+            # people_list = await self._extract_people_you_may_know(company_url)
+            # key_contacts = self._filter_key_contacts(people_list)
+            # if key_contacts:
+            #     research.key_contacts = key_contacts
+            #     logger.info(f"✓ Found {len(key_contacts)} key contacts (engineer/HR/hiring)")
 
             if self.db:
                 try:

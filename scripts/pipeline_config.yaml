@@ -48,6 +48,8 @@ generator:
   max_retries: 3
   batch_size: 10
   enabled: true
+  # Template mode: true = no AI, fixed template (400 char LinkedIn notes); false = AI-generated drafts
+  use_template_mode: true
 
 # Google Sheets Integration
 google_sheets:

@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import Database
 from src.draft_generator import DraftGenerator
+from src.template_draft_generator import TemplateDraftGenerator
 from src.google_sheets_client import update_draft_in_latest_worksheet
 from src.utils.logger import logger
 
@@ -34,6 +35,22 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
         logger.info("=" * 60)
         logger.info("Starting draft generation stage")
         logger.info("=" * 60)
+
+        # Load config for generator mode
+        config_path = Path(__file__).parent / "pipeline_config.yaml"
+        config = {}
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f) or {}
+        generator_config = config.get("generator", {})
+        use_template_mode = generator_config.get("use_template_mode", False)
+
+        if use_template_mode:
+            logger.info("Using TemplateDraftGenerator (template mode, no AI)")
+            generator = TemplateDraftGenerator()
+        else:
+            logger.info("Using DraftGenerator (AI mode)")
+            generator = DraftGenerator(db=db)
         
         # Get jobs ready for generation
         jobs = await db.get_jobs_for_generation(limit=batch_size, max_retries=max_retries)
@@ -43,9 +60,6 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
             return 0
         
         logger.info(f"Found {len(jobs)} jobs ready for draft generation")
-        
-        # Initialize generator
-        generator = DraftGenerator(db=db)
         
         generated_count = 0
         failed_count = 0
@@ -104,9 +118,8 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
                 logger.info(f"Draft content for {job.title} at {job.company}:\n{draft.message_text}")
 
                 # Google Sheets integration: update draft in latest worksheet
-                config_path = Path(__file__).parent / "pipeline_config.yaml"
                 spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
-                if config_path.exists() and spreadsheet_id:
+                if spreadsheet_id:
                     try:
                         with open(config_path) as f:
                             config = yaml.safe_load(f) or {}
