@@ -1,10 +1,18 @@
 """Template-based draft generator for LinkedIn notes (400 char limit). No AI."""
 
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from src.models import JobListing, CompanyResearch, GeneratedMessage
 from src.utils.logger import logger
+
+# Resume links by job category
+RESUME_LINKS: dict[str, str] = {
+    "data/AI": "https://tinyurl.com/yawat3hx",
+    "fullstack": "https://tinyurl.com/22xzevft",
+    "backend": "https://tinyurl.com/yd2wfads",
+}
 
 
 class TemplateDraftGenerator:
@@ -32,14 +40,45 @@ class TemplateDraftGenerator:
         logger.info(f"Loaded LinkedIn note template from {self.template_path}")
         return self._template
 
+    def _classify_job_title(self, job_title: str) -> Literal["backend", "fullstack", "data/AI"]:
+        """Classify job title into backend, fullstack, or data/AI based on keywords."""
+        title_lower = job_title.lower()
+
+        # data/AI: check first (most specific)
+        data_ai_keywords = [
+            r"\bai\b", r"\bml\b", r"\bmachine learning\b", r"\bdata science\b",
+            r"\bdata engineer", r"\bdata analyst", r"\banalytics\b", r"\bnlp\b",
+            r"\bdeep learning\b", r"\bcomputer vision\b", r"\bllm\b",
+        ]
+        for kw in data_ai_keywords:
+            if re.search(kw, title_lower):
+                return "data/AI"
+
+        # fullstack
+        fullstack_keywords = [
+            r"\bfullstack\b", r"\bfull-stack\b", r"\bfull stack\b",
+            r"\bfrontend\b", r"\bfront-end\b", r"\bfront end\b",
+            r"\breact\b", r"\bangular\b", r"\bvue\b",
+        ]
+        for kw in fullstack_keywords:
+            if re.search(kw, title_lower):
+                return "fullstack"
+
+        # backend (default)
+        return "backend"
+
     def build_message(self, job: JobListing, research: CompanyResearch) -> str:
         """Replace placeholders with job/research data. [Name] stays for manual fill-in."""
         template = self._load_template()
-        return (
+        message = (
             template.replace("[CompanyName]", research.company_name)
             .replace("[JobRole]", job.title)
         )
-        # [Name] intentionally left as [Name] - user fills during application
+        # Append resume link based on job classification
+        category = self._classify_job_title(job.title)
+        resume_url = RESUME_LINKS.get(category, RESUME_LINKS["backend"])
+        message += f"\n\nCV: {resume_url}"
+        return message
 
     async def generate_draft(
         self, job: JobListing, research: CompanyResearch
