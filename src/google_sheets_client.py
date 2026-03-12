@@ -48,7 +48,7 @@ def create_worksheet_and_append_jobs(
     """
     Create a new worksheet with today's date + random suffix and append job rows.
 
-    Columns: Job ID | Job Title | Company | LinkedIn Company URL | Search Query | Draft Generated | Custom Message | Profile Link
+    Columns: Job ID | Job Title | Company | LinkedIn Company URL | Search Query | Draft Generated
 
     Args:
         spreadsheet_id: Google Sheets spreadsheet ID
@@ -66,15 +66,15 @@ def create_worksheet_and_append_jobs(
         worksheet = spreadsheet.add_worksheet(
             title=worksheet_title,
             rows=max(len(jobs) + 10, 100),
-            cols=8,
+            cols=6,
         )
 
         # Header row
         headers = [
             "Job ID", "Job Title", "Company", "LinkedIn Company URL", "Search Query",
-            "Draft Generated", "Custom Message", "Profile Link",
+            "Draft Generated",
         ]
-        worksheet.update("A1:H1", [headers])
+        worksheet.update("A1:F1", [headers])
 
         # Data rows
         rows = []
@@ -87,12 +87,10 @@ def create_worksheet_and_append_jobs(
                 company_url,
                 search_query,
                 "",  # Draft Generated - empty initially
-                "",  # Custom Message - empty initially
-                "",  # Profile Link - empty initially
             ])
 
         if rows:
-            worksheet.update(f"A2:H{len(rows) + 1}", rows)
+            worksheet.update(f"A2:F{len(rows) + 1}", rows)
 
         logger.info(f"Created worksheet '{worksheet_title}' with {len(jobs)} jobs")
         return worksheet_title
@@ -109,10 +107,10 @@ def update_draft_in_latest_worksheet(
     personalized_drafts: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """
-    Find job_id across all worksheets and update Draft Generated (F), Custom Message (G), Profile Link (H).
+    Find job_id across all worksheets and update Draft Generated (F) only.
 
-    For multiple persons (personalized_drafts): one row per person, each with that person's draft
-    and profile link. Job info (A-E) is repeated on each row.
+    For multiple persons (personalized_drafts): one row per person, each with that person's draft.
+    Job info (A-E) is repeated on each row.
 
     Args:
         spreadsheet_id: Google Sheets spreadsheet ID
@@ -139,20 +137,17 @@ def update_draft_in_latest_worksheet(
 
                 # Read existing row to get job info (A-E)
                 existing_row = worksheet.row_values(row)
-                # Pad to 8 cols: Job ID, Job Title, Company, LinkedIn Company URL, Search Query, Draft, Custom, Profile
-                job_info = (existing_row + [""] * 8)[:5]
+                # Pad to 6 cols: Job ID, Job Title, Company, LinkedIn Company URL, Search Query, Draft
+                job_info = (existing_row + [""] * 6)[:5]
 
                 if personalized_drafts and len(personalized_drafts) > 0:
-                    # One row per person: draft (F) + profile link (H) for each
+                    # One row per person: draft (F) only
                     rows_to_write = []
                     for d in personalized_drafts:
                         draft_text = d.get("message_text", "") or ""
-                        profile_url = d.get("profile_url", "") or ""
-                        rows_to_write.append(
-                            job_info + [draft_text, "", profile_url]
-                        )
+                        rows_to_write.append(job_info + [draft_text])
                     # Update first row with person 1's data
-                    worksheet.update(f"A{row}:H{row}", [rows_to_write[0]])
+                    worksheet.update(f"A{row}:F{row}", [rows_to_write[0]])
                     # Insert additional rows for persons 2..N below
                     if len(rows_to_write) > 1:
                         worksheet.insert_rows(rows_to_write[1:], row=row + 1)
@@ -161,11 +156,8 @@ def update_draft_in_latest_worksheet(
                         f"({len(rows_to_write)} rows, one per person)"
                     )
                 else:
-                    # Single row: legacy behavior
-                    custom_message = draft_value
-                    profile_link = ""
-                    range_ref = f"F{row}:H{row}"
-                    worksheet.update(range_ref, [[draft_value, custom_message, profile_link]])
+                    # Single row: write draft only to Draft Generated (F)
+                    worksheet.update(f"F{row}", [[draft_value]])
                     logger.info(f"Updated draft for job {job_id} in worksheet '{worksheet.title}'")
 
                 return True
