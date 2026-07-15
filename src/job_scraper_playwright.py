@@ -56,7 +56,7 @@ class JobScraperPlaywright:
             return None
     
     async def _get_page(self, headless: Optional[bool] = None):
-        """Get or create a Playwright page
+        """Get or create a Playwright page from the persistent LinkedIn profile.
         
         Args:
             headless: Override headless mode (uses self.headless if None)
@@ -64,30 +64,16 @@ class JobScraperPlaywright:
         if self.page and not self.page.is_closed():
             return self.page
         
-        # Use instance headless if not overridden
         if headless is None:
             headless = self.headless
         
-        # Get browser (launched with LinkedIn cookies via storage_state)
+        # Persistent profile context (manual login once via linkedin_login_once.py)
+        self.page = await self.session_manager.get_page(headless=headless)
+        # Keep shim reference for older callers that set playwright_browser
         if not self.playwright_browser:
-            self.playwright_browser = await self.session_manager.get_playwright_browser(headless=headless)
-        
-        # Get the context with LinkedIn cookies and a page
-        contexts = self.playwright_browser.contexts
-        if contexts:
-            context = contexts[0]
-            pages = context.pages
-            if pages:
-                self.page = pages[0]
-            else:
-                self.page = await context.new_page()
-        else:
-            context = await self.playwright_browser.new_context()
-            self.page = await context.new_page()
-        
-        # Auto-dismiss any JavaScript dialogs
-        self.page.on("dialog", lambda dialog: dialog.dismiss())
-        
+            self.playwright_browser = await self.session_manager.get_playwright_browser(
+                headless=headless
+            )
         return self.page
     
     async def _navigate_to_jobs_page(self, page):
@@ -110,6 +96,44 @@ class JobScraperPlaywright:
                 logger.warning("Search input not immediately visible, continuing anyway")
         
         logger.info("Successfully navigated to LinkedIn Jobs page")
+
+    async def _navigate_to_search_results(
+        self,
+        page,
+        keywords: str,
+        location: Optional[str] = None,
+        past_24_hours: bool = True,
+    ):
+        """Open classic LinkedIn jobs search URL directly (more reliable than Jobs home UI search)."""
+        params = {"keywords": keywords}
+        if location:
+            params["location"] = location
+        if past_24_hours:
+            params["f_TPR"] = "r86400"
+
+        url = f"https://www.linkedin.com/jobs/search/?{urlencode(params)}"
+        logger.info(f"Navigating directly to jobs search: {url}")
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(5)
+
+        # Wait for either classic or new job cards
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            job_count = await page.evaluate(
+                """() => {
+                    const newUI = document.querySelectorAll('[data-view-name="job-search-job-card"]').length;
+                    const oldUI = document.querySelectorAll('[data-job-id]').length;
+                    return Math.max(newUI, oldUI);
+                }"""
+            )
+            if job_count > 0:
+                logger.info(f"Search results loaded with {job_count} job cards")
+                return
+            await asyncio.sleep(1)
+
+        logger.warning(
+            f"No job cards detected after direct search navigation. URL={page.url} title={await page.title()}"
+        )
     
     async def _find_title_input(self, page):
         """Find the job search input field (now a single combined field for title and location)"""
@@ -810,6 +834,65 @@ class JobScraperPlaywright:
         except Exception as e:
             logger.debug(f"Error checking Easy Apply: {e}")
             return False
+
+    async def _extract_jobs_from_links(self, page, max_results: int) -> List[JobListing]:
+        """Fallback: build JobListings from visible /jobs/view/ anchors (works on guest teaser UI too)."""
+        try:
+            raw = await page.evaluate(
+                """() => {
+                  const seen = new Set();
+                  const out = [];
+                  for (const a of document.querySelectorAll('a[href*="/jobs/view/"]')) {
+                    const href = a.href || a.getAttribute('href') || '';
+                    const m = href.match(/\\/jobs\\/view\\/(?:[^/?#]*-)?(\\d+)/);
+                    if (!m) continue;
+                    const jobId = m[1];
+                    if (seen.has(jobId)) continue;
+                    seen.add(jobId);
+                    const title = (a.innerText || a.getAttribute('aria-label') || '').trim().split('\\n')[0].trim();
+                    let company = '';
+                    let root = a.closest('li, div, article') || a.parentElement;
+                    if (root) {
+                      const companyEl = root.querySelector(
+                        'h4, .base-search-card__subtitle, .job-search-card__subtitle, [class*=\"company\"] a, [class*=\"subtitle\"]'
+                      );
+                      if (companyEl) company = (companyEl.innerText || '').trim().split('\\n')[0].trim();
+                    }
+                    out.push({
+                      job_id: jobId,
+                      title: title || `Job ${jobId}`,
+                      company: company || 'Unknown',
+                      url: href.split('?')[0],
+                    });
+                  }
+                  return out;
+                }"""
+            )
+        except Exception as e:
+            logger.warning(f"Link-based job extraction failed: {e}")
+            return []
+
+        listings: List[JobListing] = []
+        for item in raw:
+            if len(listings) >= max_results:
+                break
+            title = item.get("title") or ""
+            if self._title_contains_excluded_word(title):
+                logger.info(f"Skipping job {item.get('job_id')}: title '{title}' contains excluded word")
+                continue
+            try:
+                listings.append(
+                    JobListing(
+                        job_id=str(item["job_id"]),
+                        title=title,
+                        company=item.get("company") or "Unknown",
+                        url=item.get("url") or f"https://www.linkedin.com/jobs/view/{item['job_id']}",
+                        status="scraped",
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Could not build JobListing from link data {item}: {e}")
+        return listings
 
     def _title_contains_excluded_word(self, title: str) -> bool:
         """Check if job title contains any excluded word (case-insensitive)."""
@@ -1844,25 +1927,19 @@ class JobScraperPlaywright:
         logger.info(f"Starting job scrape: keywords='{keywords}', location='{location}', max_results={max_results}")
         
         try:
-            # Get Playwright page
+            # Get Playwright page from persistent LinkedIn profile
             logger.info("Getting Playwright page...")
             page = await self._get_page()  # Uses self.headless
             logger.info(f"Got page, current URL: {page.url}")
+            await self.session_manager.assert_logged_in(page)
             
-            # Navigate to LinkedIn Jobs (assumes already logged in via cookies)
-            logger.info("Navigating to LinkedIn Jobs page...")
-            await self._navigate_to_jobs_page(page)
-            
-            # Perform search with separate title and location fields
-            # This method now handles waiting for results to load
-            await self._search_jobs(page, keywords=keywords, location=location)
-            
-            # Brief verification that we're on results page (already checked in _search_jobs)
+            # Prefer classic /jobs/search URL — Jobs home semantic search often
+            # lands on /jobs/search-results/ without extractable job cards.
+            await self._navigate_to_search_results(
+                page, keywords=keywords, location=location, past_24_hours=True
+            )
             logger.debug(f"Current page URL: {page.url}")
-            
-            # Apply date filter (Past 24 hours) before scrolling
-            await self._apply_date_filter(page)
-            
+
             # Apply filters if provided
             if experience_level or job_type:
                 await self._apply_filters(page, experience_level, job_type)
@@ -1992,6 +2069,11 @@ class JobScraperPlaywright:
                         logger.debug(f"Fallback failed: {e}")
 
                 if not list_items:
+                    logger.info("No job cards found with standard selectors; trying link-based fallback...")
+                    fallback_jobs = await self._extract_jobs_from_links(page, max_results=max_results)
+                    if fallback_jobs:
+                        logger.info(f"Fallback extracted {len(fallback_jobs)} jobs from /jobs/view/ links")
+                        return fallback_jobs
                     logger.info("No job cards found on this page, stopping")
                     break
 
@@ -2015,9 +2097,10 @@ class JobScraperPlaywright:
                         logger.warning(f"Skipping card {i+1}/{len(list_items)}: not a valid job card (view_name={view_name if 'view_name' in locals() else 'unknown'})")
                         continue
 
-                    # Only process jobs with Easy Apply
-                    if not await self._has_easy_apply(list_item):
-                        logger.debug(f"Skipping card {i+1}/{len(list_items)}: no Easy Apply")
+                    # Easy Apply filter (disable with EASY_APPLY_ONLY=false)
+                    easy_apply_only = os.getenv("EASY_APPLY_ONLY", "true").lower() in ("1", "true", "yes")
+                    if easy_apply_only and not await self._has_easy_apply(list_item):
+                        logger.info(f"Skipping card {i+1}/{len(list_items)}: no Easy Apply")
                         continue
 
                     logger.info(f"Processing card {i+1}/{len(list_items)}...")
@@ -2162,6 +2245,11 @@ class JobScraperPlaywright:
                     break
 
             logger.info(f"Successfully scraped {len(job_listings)} jobs")
+            if not job_listings:
+                fallback_jobs = await self._extract_jobs_from_links(page, max_results=max_results)
+                if fallback_jobs:
+                    logger.info(f"Primary extraction saved 0 jobs; fallback recovered {len(fallback_jobs)}")
+                    return fallback_jobs
             return job_listings
             
         except Exception as e:

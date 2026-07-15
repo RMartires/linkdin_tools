@@ -105,34 +105,18 @@ class CompanyResearcherPlaywright:
         return matches
 
     async def _get_page(self, headless: Optional[bool] = None):
-        """Get or create a Playwright page"""
+        """Get or create a Playwright page from the persistent LinkedIn profile"""
         if self.page and not self.page.is_closed():
             return self.page
 
         if headless is None:
             headless = self.headless
 
+        self.page = await self.session_manager.get_page(headless=headless)
         if not self.playwright_browser:
             self.playwright_browser = await self.session_manager.get_playwright_browser(
                 headless=headless
             )
-
-        contexts = self.playwright_browser.contexts
-        if contexts:
-            context = contexts[0]
-        else:
-            context = await self.playwright_browser.new_context(
-                storage_state=self.session_manager.storage_state_path,
-                viewport={"width": 1920, "height": 1080},
-            )
-
-        pages = context.pages
-        if pages:
-            self.page = pages[0]
-        else:
-            self.page = await context.new_page()
-
-        self.page.on("dialog", lambda dialog: dialog.dismiss())
         return self.page
 
     async def _extract_linkedin_about_overview(

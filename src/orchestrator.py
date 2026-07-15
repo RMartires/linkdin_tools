@@ -37,9 +37,13 @@ class Orchestrator:
         self.company_researcher = CompanyResearcher(model=model, browser=None, db=db)
     
     async def _ensure_playwright_browser(self):
-        """Ensure Playwright browser is initialized"""
+        """Ensure persistent LinkedIn profile context is ready and authenticated"""
         if not self.playwright_browser:
-            self.playwright_browser = await self.session_manager.get_playwright_browser(headless=False)
+            page = await self.session_manager.get_page(headless=False)
+            await self.session_manager.assert_logged_in(page)
+            self.playwright_browser = await self.session_manager.get_playwright_browser(
+                headless=False
+            )
             self.job_scraper.playwright_browser = self.playwright_browser
     
     async def scrape_jobs(
@@ -58,7 +62,7 @@ class Orchestrator:
         """
         logger.info("Starting job scraping phase...")
         
-        # Ensure Playwright browser is initialized before scraping
+        # Ensure persistent profile is authenticated before scraping
         await self._ensure_playwright_browser()
         
         # Scrape jobs
