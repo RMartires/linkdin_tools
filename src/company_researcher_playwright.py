@@ -3,10 +3,12 @@
 import asyncio
 import re
 from typing import Optional, Dict, Any, List
+from urllib.parse import quote_plus
 
 from src.models import CompanyResearch, JobListing
 from src.database import Database
 from src.session_manager import SessionManager
+from src.utils.linkedin import sanitize_http_url
 from src.utils.logger import logger
 
 
@@ -18,6 +20,7 @@ class CompanyResearcherPlaywright:
         db: Optional[Database] = None,
         playwright_browser=None,
         headless: bool = False,
+        session_manager: Optional[SessionManager] = None,
     ):
         """Initialize company researcher with Playwright
 
@@ -25,10 +28,11 @@ class CompanyResearcherPlaywright:
             db: Optional Database instance for saving research
             playwright_browser: Optional Playwright Browser instance (reused if provided)
             headless: Whether to run browser in headless mode (default: False)
+            session_manager: Shared SessionManager (avoids second Chrome on same profile)
         """
         self.db = db
         self.playwright_browser = playwright_browser
-        self.session_manager = SessionManager()
+        self.session_manager = session_manager or SessionManager()
         self.page = None
         self.headless = headless
 
@@ -206,7 +210,7 @@ class CompanyResearcherPlaywright:
             if await website_link.count() > 0:
                 href = await website_link.get_attribute("href")
                 if href and "linkedin.com" not in href:
-                    website_url = href.rstrip(".,;:!?)")
+                    website_url = sanitize_http_url(href)
 
             # Extract industry and size from metadata
             industry = metadata.get("Industry")
@@ -390,12 +394,72 @@ class CompanyResearcherPlaywright:
 
         return people_list
 
+    async def _resolve_company_url(self, company_name: str) -> Optional[str]:
+        """Find a LinkedIn company URL via company search when job scrape omitted it."""
+        # Try full name, then progressively shorter / typo-tolerant variants
+        variants = [company_name]
+        parts = company_name.split()
+        if len(parts) > 1:
+            variants.append(" ".join(parts[:-1]))  # drop last token (often misspelled)
+        # common typo: Technolgies -> Technologies
+        fixed = company_name.replace("Technolgies", "Technologies").replace(
+            "Technolgy", "Technology"
+        )
+        if fixed != company_name:
+            variants.append(fixed)
+        # dedupe while preserving order
+        seen = set()
+        queries = []
+        for v in variants:
+            key = v.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                queries.append(v.strip())
+
+        try:
+            page = await self._get_page()
+            for query in queries:
+                search_url = (
+                    "https://www.linkedin.com/search/results/companies/"
+                    f"?keywords={quote_plus(query)}"
+                )
+                logger.info(f"Resolving company URL via search: {query}")
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2.5)
+
+                href = await page.evaluate(
+                    """() => {
+                        const anchors = Array.from(
+                            document.querySelectorAll('a[href*="/company/"]')
+                        );
+                        for (const a of anchors) {
+                            const href = a.href || a.getAttribute('href') || '';
+                            if (!href.includes('/company/')) continue;
+                            if (href.includes('/search/')) continue;
+                            const clean = href.split('?')[0].replace(/\\/$/, '');
+                            const m = clean.match(/\\/company\\/([^/]+)/);
+                            if (m && m[1] && m[1] !== 'search') {
+                                return `https://www.linkedin.com/company/${m[1]}/life`;
+                            }
+                        }
+                        return null;
+                    }"""
+                )
+                if href:
+                    logger.info(f"✓ Resolved company URL for {company_name} via '{query}': {href}")
+                    return href
+            logger.warning(f"Could not resolve company URL for {company_name}")
+            return None
+        except Exception as e:
+            logger.warning(f"Company URL resolve failed for {company_name}: {e}")
+            return None
+
     async def research_company(self, job: JobListing) -> CompanyResearch:
         """
         Research a company for a given job using Playwright to scrape LinkedIn About page.
 
         Args:
-            job: JobListing object with company information (must have company_url)
+            job: JobListing object with company information (company_url preferred)
 
         Returns:
             CompanyResearch object with summaries and website URL
@@ -405,7 +469,13 @@ class CompanyResearcherPlaywright:
 
         if not company_url:
             logger.warning(
-                f"No company_url found for job {job.job_id}, cannot research company"
+                f"No company_url on job {job.job_id}; attempting LinkedIn company search"
+            )
+            company_url = await self._resolve_company_url(company_name)
+
+        if not company_url:
+            logger.error(
+                f"Cannot research {company_name}: no company_url after search fallback"
             )
             return CompanyResearch(
                 job_id=job.job_id or "",
