@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from src.models import JobListing
 from src.session_manager import SessionManager
+from src.utils.linkedin import is_bad_job_title, resolve_company_name, company_name_from_slug
 from src.utils.logger import logger
 
 load_dotenv()
@@ -22,7 +23,14 @@ JOB_TITLE_EXCLUDED_WORDS = ["Frontend", "Ops"]
 class JobScraperPlaywright:
     """Scrape LinkedIn jobs using Playwright"""
     
-    def __init__(self, model: Optional[str] = None, browser=None, playwright_browser=None, headless: bool = False):
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        browser=None,
+        playwright_browser=None,
+        headless: bool = False,
+        session_manager: Optional[SessionManager] = None,
+    ):
         """Initialize job scraper
         
         Args:
@@ -30,11 +38,12 @@ class JobScraperPlaywright:
             browser: Optional browser-use Browser instance (backward compatibility)
             playwright_browser: Optional Playwright Browser instance
             headless: Whether to run browser in headless mode (default: False)
+            session_manager: Shared SessionManager (required for single Chrome/CDP profile)
         """
         self.model = model  # Kept for backward compatibility but not used
         self.browser = browser  # Kept for backward compatibility
         self.playwright_browser = playwright_browser
-        self.session_manager = SessionManager()
+        self.session_manager = session_manager or SessionManager()
         self.page = None
         self.headless = headless
     
@@ -1785,118 +1794,105 @@ class JobScraperPlaywright:
             
             # Wait for panel to be ready
             await asyncio.sleep(1)
-            
-            # Find the panel
-            panel = None
-            try:
-                # Try new UI first
-                panel = await page.query_selector('div[role="main"][data-sdui-screen*="SemanticJobDetails"]')
-                if not panel:
-                    # Fallback to old UI
-                    panel = await page.query_selector('.jobs-search__job-details')
-            except:
-                pass
-            
-            if not panel:
-                logger.warning("Could not find details panel")
-                return None
-            
-            # Extract title
-            title = None
-            title_selectors = [
-                'a[href*="/jobs/view/"]',  # New UI: title is in a link
-                'h1',  # Usually the job title is in h1
-                'h2.jobs-details-top-card__job-title',
-                '.job-details-jobs-unified-top-card__job-title',
-                '[data-testid="job-title"]',
-            ]
-            for selector in title_selectors:
-                try:
-                    title_elem = await panel.query_selector(selector)
-                    if title_elem:
-                        title = await title_elem.inner_text()
-                        if title:
-                            title = title.strip()
-                            break
-                except:
-                    continue
-            
-            # Extract company name
-            company = None
-            company_selectors = [
-                'a[href*="/company/"][href*="/life/"]',  # Company link in new UI
-                '.job-details-jobs-unified-top-card__company-name',
-                '.jobs-company__box a',
-            ]
-            for selector in company_selectors:
-                try:
-                    company_elem = await panel.query_selector(selector)
-                    if company_elem:
-                        company = await company_elem.inner_text()
-                        if company:
-                            company = company.strip()
-                            break
-                except:
-                    continue
-            
-            # Extract location
-            location = None
-            location_selectors = [
-                '.job-details-jobs-unified-top-card__primary-description-without-tagline',
-                '.jobs-details-top-card__primary-description',
-                '[data-testid="job-location"]',
-            ]
-            for selector in location_selectors:
-                try:
-                    loc_elem = await panel.query_selector(selector)
-                    if loc_elem:
-                        location_text = await loc_elem.inner_text()
-                        if location_text:
-                            # Extract location part (before "·" or " - ")
-                            location = location_text.split('·')[0].split(' - ')[0].strip()
-                            if location:
-                                break
-                except:
-                    continue
-            
-            # Construct job URL
+
+            extracted = await page.evaluate(
+                """() => {
+                  const root = document.querySelector(
+                    'div[role="main"][data-sdui-screen*="SemanticJobDetails"], .jobs-search__job-details, .jobs-details, main'
+                  ) || document.body;
+                  const text = (root.innerText || '').replace(/\\r/g, '');
+                  let title = '';
+                  const h1 = root.querySelector('h1');
+                  if (h1) title = (h1.innerText || '').trim().split('\\n')[0].trim();
+                  if (!title) {
+                    const titleLink = root.querySelector('.job-details-jobs-unified-top-card__job-title a, a[href*="/jobs/view/"]');
+                    if (titleLink) title = (titleLink.innerText || '').trim().split('\\n')[0].trim();
+                  }
+                  const badTitles = new Set(['remote','hybrid','on-site','onsite','full-time','part-time','contract','apply','save']);
+                  if (title && badTitles.has(title.toLowerCase())) title = '';
+                  if (!title) {
+                    // Prefer a substantial line that is not a workplace/job-type chip
+                    const lines = text.split('\\n').map(l => l.trim()).filter(Boolean);
+                    for (const line of lines) {
+                      if (line.length < 12 || line.length > 140) continue;
+                      if (badTitles.has(line.toLowerCase())) continue;
+                      if (/^(about the job|show more|promoted)/i.test(line)) continue;
+                      if (/·/.test(line)) continue;
+                      if (/clicked apply|people clicked/i.test(line)) continue;
+                      title = line;
+                      break;
+                    }
+                  }
+                  let company = '';
+                  let companySlug = '';
+                  const companyLink = root.querySelector('a[href*="/company/"]') || document.querySelector('a[href*="/company/"]');
+                  if (companyLink) {
+                    company = (companyLink.innerText || companyLink.getAttribute('aria-label') || '').trim().split('\\n')[0].trim();
+                    company = company.replace(/\\s+logo$/i, '').trim();
+                  }
+                  if (companyLink) {
+                    const href = companyLink.href || companyLink.getAttribute('href') || '';
+                    const m = href.match(/\\/company\\/([^/?#]+)/);
+                    if (m) companySlug = decodeURIComponent(m[1]);
+                  }
+                  let location = '';
+                  const locEl = root.querySelector(
+                    '.job-details-jobs-unified-top-card__primary-description-container, .jobs-unified-top-card__primary-description, [class*="primary-description"]'
+                  );
+                  if (locEl) location = (locEl.innerText || '').split('·')[0].trim();
+                  if (!location) {
+                    const locMatch = text.match(/([A-Za-z][A-Za-z .,'-]{2,80})\\s*·\\s*\\d+\\s+(hour|day|week|month|minute)/i);
+                    if (locMatch) location = locMatch[1].trim();
+                  }
+                  if (!location) {
+                    for (const token of ['Remote', 'Hybrid', 'On-site', 'Onsite']) {
+                      if (new RegExp('\\\\b' + token + '\\\\b', 'i').test(text)) { location = token; break; }
+                    }
+                  }
+                  let description = '';
+                  const descEl = root.querySelector('#job-details, .jobs-description__content, .jobs-box__html-content, .jobs-description, article');
+                  if (descEl) description = (descEl.innerText || '').trim();
+                  if (!description) {
+                    const aboutIdx = text.indexOf('About the job');
+                    if (aboutIdx >= 0) description = text.slice(aboutIdx, aboutIdx + 8000).trim();
+                  }
+                  let companyUrl = '';
+                  const href = companyLink && (companyLink.href || companyLink.getAttribute('href') || '');
+                  if (href && href.includes('/company/')) companyUrl = href.split('?')[0];
+                  return { title, company, companySlug, location, description: description.slice(0, 8000), companyUrl };
+                }"""
+            )
+
+            title = (extracted or {}).get("title") or None
+            company = (extracted or {}).get("company") or None
+            if not company:
+                slug = (extracted or {}).get("companySlug")
+                if slug:
+                    company = company_name_from_slug(slug)
+            location = (extracted or {}).get("location") or None
+            description = (extracted or {}).get("description") or None
+            if description and len(description) < 40:
+                description = None
+
             job_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
-            
-            # Extract posted date (if available)
-            posted_date = None
-            date_selectors = [
-                'time[datetime]',
-                '.jobs-details-top-card__posted-date',
-            ]
-            for selector in date_selectors:
-                try:
-                    date_elem = await panel.query_selector(selector)
-                    if date_elem:
-                        datetime_attr = await date_elem.get_attribute('datetime')
-                        if datetime_attr:
-                            posted_date = datetime_attr.strip()
-                            break
-                        date_text = await date_elem.inner_text()
-                        if date_text:
-                            posted_date = date_text.strip()
-                            break
-                except:
-                    continue
             
             if not title:
                 logger.warning("Could not extract title from panel")
-                # Use fallback title
                 title = f"Job {job_id}"
             
-            logger.info(f"Extracted from panel: title={title}, company={company}, location={location}")
+            logger.info(
+                f"Extracted from panel: title={title}, company={company}, "
+                f"location={location}, description_len={len(description or '')}"
+            )
             
             return {
                 'title': title,
                 'company': company,
                 'location': location,
-                'posted_date': posted_date,
+                'description': description,
                 'url': job_url,
-                'job_id': job_id
+                'job_id': job_id,
+                'company_url': (extracted or {}).get("companyUrl") or None,
             }
             
         except Exception as e:
@@ -2097,8 +2093,12 @@ class JobScraperPlaywright:
                         logger.warning(f"Skipping card {i+1}/{len(list_items)}: not a valid job card (view_name={view_name if 'view_name' in locals() else 'unknown'})")
                         continue
 
-                    # Easy Apply filter (disable with EASY_APPLY_ONLY=false)
-                    easy_apply_only = os.getenv("EASY_APPLY_ONLY", "true").lower() in ("1", "true", "yes")
+                    # Easy Apply filter (default off — many regions lack the badge)
+                    easy_apply_only = os.getenv("EASY_APPLY_ONLY", "false").lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
                     if easy_apply_only and not await self._has_easy_apply(list_item):
                         logger.info(f"Skipping card {i+1}/{len(list_items)}: no Easy Apply")
                         continue
@@ -2185,41 +2185,42 @@ class JobScraperPlaywright:
 
                         logger.info(f"✓ Successfully extracted job {i+1}: {job_data.get('title', 'Unknown')} (ID: {job_id})")
 
-                        company_url = await self._extract_company_url_from_details_panel(page)
+                        company_url = job_data.get("company_url")
+                        if not company_url:
+                            company_url = await self._extract_company_url_from_details_panel(page)
                         if company_url:
                             logger.info(f"✓ Successfully extracted company URL: {company_url}")
                         else:
-                            logger.warning(f"✗ Could not extract company URL from details panel")
+                            logger.warning("✗ Could not extract company URL from details panel")
 
                         posted_date = None
                         if job_data.get('posted_date'):
                             try:
                                 date_str = job_data['posted_date'].lower()
-                                if 'ago' in date_str or 'day' in date_str:
-                                    posted_date = None
-                                else:
+                                if 'ago' not in date_str and 'day' not in date_str:
                                     posted_date = datetime.fromisoformat(job_data['posted_date'])
-                            except:
+                            except Exception:
                                 posted_date = None
-
-                        experience_level_val = None
-                        job_type_val = None
 
                         try:
                             logger.debug(f"Creating JobListing for job {job_id} with company_url: {company_url}")
+                            company_name = resolve_company_name(
+                                job_data.get("company"), company_url
+                            )
                             job_listing = JobListing(
                                 job_id=job_id,
                                 title=job_data.get('title', ''),
-                                company=job_data.get('company', ''),
+                                company=company_name,
                                 url=job_data.get('url', 'https://www.linkedin.com/jobs'),
                                 company_url=company_url,
                                 location=job_data.get('location'),
-                                description=None,
+                                description=job_data.get('description'),
                                 posted_date=posted_date,
                                 skills=[],
-                                experience_level=experience_level_val,
-                                job_type=job_type_val,
-                                status='pending'
+                                experience_level=None,
+                                job_type=None,
+                                status='scraped',
+                                scraped_at=datetime.utcnow(),
                             )
                             logger.info(f"Created JobListing for '{job_listing.title}' at '{job_listing.company}' - company_url: {job_listing.company_url}")
                             job_listings.append(job_listing)
@@ -2259,6 +2260,61 @@ class JobScraperPlaywright:
     async def scrape_jobs_simple(self, keywords: str, location: Optional[str] = None) -> List[JobListing]:
         """Simplified scraping method"""
         return await self.scrape_jobs(keywords=keywords, location=location)
+
+    async def backfill_job_details(self, job: JobListing) -> JobListing:
+        """Visit a job page and fill missing location / description / company_url."""
+        needs_location = not job.location
+        needs_description = not job.description
+        needs_company_url = not job.company_url
+        if not (needs_location or needs_description or needs_company_url):
+            return job
+        if not job.url and not job.job_id:
+            return job
+
+        page = await self._get_page()
+        target = str(job.url) if job.url else f"https://www.linkedin.com/jobs/view/{job.job_id}/"
+        logger.info(
+            f"Backfilling details for job {job.job_id} "
+            f"(loc={needs_location}, desc={needs_description}, url={needs_company_url})"
+        )
+        try:
+            await page.goto(target, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(2.5)
+
+            job_id = job.job_id or self._extract_job_id(page.url) or ""
+            panel_data = await self._extract_job_data_from_panel(page, job_id) or {}
+            company_url = panel_data.get("company_url")
+            if needs_company_url and not company_url:
+                company_url = await self._extract_company_url_from_details_panel(page)
+
+            if needs_location and panel_data.get("location"):
+                job.location = panel_data["location"]
+            if needs_description and panel_data.get("description"):
+                job.description = panel_data["description"]
+            if needs_company_url and company_url:
+                job.company_url = company_url
+
+            new_title = (panel_data.get("title") or "").strip()
+            if new_title and not is_bad_job_title(new_title):
+                if not job.title or is_bad_job_title(job.title) or job.title.startswith("Job "):
+                    job.title = new_title
+
+            new_company = resolve_company_name(
+                panel_data.get("company"), company_url or job.company_url
+            )
+            if new_company != "Unknown" and (
+                not job.company or job.company == "Unknown"
+            ):
+                job.company = new_company
+
+            job.updated_at = datetime.utcnow()
+            logger.info(
+                f"Backfill result {job.job_id}: location={job.location!r}, "
+                f"description_len={len(job.description or '')}, company_url={job.company_url}"
+            )
+        except Exception as e:
+            logger.warning(f"Backfill failed for job {job.job_id}: {e}")
+        return job
     
     async def close(self):
         """Close browser page if open"""

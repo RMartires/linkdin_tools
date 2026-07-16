@@ -8,6 +8,7 @@ from pymongo.errors import DuplicateKeyError
 from dotenv import load_dotenv
 
 from src.models import JobListing, CompanyResearch, GeneratedMessage, JobPipeline
+from src.utils.linkedin import PROTECTED_JOB_STATUSES, is_bad_job_title, sanitize_http_url
 from src.utils.logger import logger
 
 load_dotenv()
@@ -92,7 +93,22 @@ class Database:
                 created_at_value = job_dict.pop('created_at', None)
                 if created_at_value is None:
                     created_at_value = datetime.utcnow()
-                
+
+                # Don't regress pipeline status when re-scraping an existing job
+                existing = await self.db.jobs.find_one(
+                    {"job_id": job.job_id}, {"status": 1, "company": 1, "title": 1}
+                )
+                if existing and existing.get("status") in PROTECTED_JOB_STATUSES:
+                    job_dict.pop("status", None)
+
+                if existing:
+                    incoming_company = (job_dict.get("company") or "").strip()
+                    existing_company = (existing.get("company") or "").strip()
+                    if incoming_company.lower() in {"", "unknown"} and existing_company and existing_company.lower() != "unknown":
+                        job_dict.pop("company", None)
+                    incoming_title = (job_dict.get("title") or "").strip()
+                    if is_bad_job_title(incoming_title) and existing.get("title"):
+                        job_dict.pop("title", None)
                 # Try to update existing job, or insert if new
                 result = await self.db.jobs.update_one(
                     {"job_id": job.job_id},
@@ -164,6 +180,11 @@ class Database:
         doc = await self.db.company_research.find_one({"job_id": job_id})
         if doc:
             doc.pop("_id", None)
+            cleaned_website = sanitize_http_url(doc.get("website"))
+            if doc.get("website") and not cleaned_website:
+                doc.pop("website", None)
+            elif cleaned_website:
+                doc["website"] = cleaned_website
             return CompanyResearch(**doc)
         return None
     

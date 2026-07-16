@@ -1,13 +1,14 @@
 """Workflow orchestrator for LinkedIn job automation"""
 
 import asyncio
+import os
 from typing import List, Optional, Dict, Any
-from datetime import datetime
 
 from src.database import Database
-from src.job_scraper import JobScraper
 from src.job_scraper_playwright import JobScraperPlaywright
-from src.company_researcher import CompanyResearcher
+from src.company_researcher_playwright import CompanyResearcherPlaywright
+from src.draft_generator import DraftGenerator
+from src.template_draft_generator import TemplateDraftGenerator
 from src.session_manager import SessionManager
 from src.models import JobListing, CompanyResearch, GeneratedMessage, JobPipeline
 from src.utils.logger import logger
@@ -15,10 +16,10 @@ from src.utils.logger import logger
 
 class Orchestrator:
     """Orchestrates the full LinkedIn automation pipeline"""
-    
+
     def __init__(self, db: Database, model: Optional[str] = None):
         """Initialize orchestrator with database connection
-        
+
         Args:
             db: Database instance
             model: Optional model name to override MODEL_NAME env var
@@ -26,16 +27,20 @@ class Orchestrator:
         self.db = db
         self.model = model
         self.session_manager = SessionManager()
-        
-        # Defer browser-use creation - it launches Chrome and conflicts with Playwright
-        # when both try to use the same profile. Only create when research phase runs.
-        self.browser = None  # Lazy init in research_companies
-        self.playwright_browser = None  # Will be initialized async in scrape_jobs
-        
-        # Use Playwright scraper (doesn't need browser-use)
-        self.job_scraper = JobScraperPlaywright(model=model, browser=None)
-        self.company_researcher = CompanyResearcher(model=model, browser=None, db=db)
-    
+
+        # Single shared CDP session for scrape + research (avoid profile lock races)
+        self.playwright_browser = None
+        self.job_scraper = JobScraperPlaywright(
+            model=model,
+            browser=None,
+            session_manager=self.session_manager,
+        )
+        self.company_researcher = CompanyResearcherPlaywright(
+            db=db,
+            session_manager=self.session_manager,
+            headless=False,
+        )
+
     async def _ensure_playwright_browser(self):
         """Ensure persistent LinkedIn profile context is ready and authenticated"""
         if not self.playwright_browser:
@@ -45,62 +50,52 @@ class Orchestrator:
                 headless=False
             )
             self.job_scraper.playwright_browser = self.playwright_browser
-    
+            self.company_researcher.playwright_browser = self.playwright_browser
+
+    async def close(self):
+        """Release Chrome/CDP resources"""
+        try:
+            await self.session_manager.close()
+        except Exception as e:
+            logger.debug(f"session_manager.close error: {e}")
+        self.playwright_browser = None
+
     async def scrape_jobs(
         self,
         keywords: str,
         location: Optional[str] = None,
         experience_level: Optional[str] = None,
         job_type: Optional[str] = None,
-        max_results: int = 50
+        max_results: int = 50,
     ) -> List[JobListing]:
-        """
-        Scrape jobs and save to database
-        
-        Returns:
-            List of JobListing objects
-        """
+        """Scrape jobs and save to database"""
         logger.info("Starting job scraping phase...")
-        
-        # Ensure persistent profile is authenticated before scraping
+
         await self._ensure_playwright_browser()
-        
-        # Scrape jobs
+
         jobs = await self.job_scraper.scrape_jobs(
             keywords=keywords,
             location=location,
             experience_level=experience_level,
             job_type=job_type,
-            max_results=max_results
+            max_results=max_results,
         )
-        
-        # Save to database
+
         if jobs:
             await self.db.save_jobs(jobs)
             logger.info(f"Saved {len(jobs)} jobs to database")
-        
+
         return jobs
-    
+
     async def research_companies(
         self,
         jobs: Optional[List[JobListing]] = None,
         job_ids: Optional[List[str]] = None,
-        batch_size: int = 5
+        batch_size: int = 1,
     ) -> Dict[str, CompanyResearch]:
-        """
-        Research companies for jobs
-        
-        Args:
-            jobs: List of JobListing objects (optional)
-            job_ids: List of job IDs to research (optional)
-            batch_size: Number of companies to research in parallel
-        
-        Returns:
-            Dictionary mapping job_id to CompanyResearch
-        """
+        """Research companies for jobs (sequential by default — shared Playwright page)."""
         logger.info("Starting company research phase...")
-        
-        # Get jobs if not provided
+
         if not jobs:
             if job_ids:
                 jobs = []
@@ -109,58 +104,144 @@ class Orchestrator:
                     if job:
                         jobs.append(job)
             else:
-                # Get all pending jobs
-                jobs = await self.db.get_jobs({"status": "pending"}, limit=100)
-        
+                jobs = await self.db.get_jobs_for_enrichment(limit=100)
+                if not jobs:
+                    jobs = await self.db.get_jobs({"status": "pending"}, limit=100)
+
         if not jobs:
             logger.warning("No jobs found for research")
             return {}
-        
+
+        await self._ensure_playwright_browser()
+
+        for i, job in enumerate(jobs):
+            try:
+                before = (job.location, job.description, str(job.company_url or ""))
+                jobs[i] = await self.job_scraper.backfill_job_details(job)
+                if (jobs[i].location, jobs[i].description, str(jobs[i].company_url or "")) != before:
+                    await self.db.save_jobs([jobs[i]])
+            except Exception as e:
+                logger.warning(f"Job detail backfill failed for {job.job_id}: {e}")
+
         logger.info(f"Researching {len(jobs)} companies...")
-        
-        # Process in batches to avoid overwhelming the system
-        research_results = {}
-        
+        research_results: Dict[str, CompanyResearch] = {}
+
         for i in range(0, len(jobs), batch_size):
-            batch = jobs[i:i + batch_size]
-            logger.info(f"Processing batch {i//batch_size + 1} ({len(batch)} companies)")
-            
-            # Process batch concurrently
-            tasks = [self._research_single_company(job) for job in batch]
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            for job, result in zip(batch, batch_results):
-                if isinstance(result, Exception):
-                    logger.error(f"Error researching {job.company}: {result}")
-                elif result:
-                    research_results[job.job_id] = result
-                    await self.db.save_company_research(job.job_id, result)
-            
-            # Small delay between batches
+            batch = jobs[i : i + batch_size]
+            logger.info(f"Processing research batch {i // batch_size + 1} ({len(batch)} companies)")
+
+            for job in batch:
+                try:
+                    result = await self._research_single_company(job)
+                    if result and self._research_has_content(result):
+                        research_results[job.job_id] = result
+                        await self.db.save_company_research(job.job_id, result)
+                        await self.db.update_job_status(job.job_id, "enriched")
+                        logger.info(f"✓ Research saved for {job.company} (job {job.job_id})")
+                    else:
+                        logger.error(
+                            f"Research for {job.company} produced empty content; continuing"
+                        )
+                except Exception as e:
+                    logger.error(f"Error researching {job.company}: {e}", exc_info=True)
+
             if i + batch_size < len(jobs):
-                await asyncio.sleep(2)
-        
+                await asyncio.sleep(1)
+
         logger.info(f"Completed research for {len(research_results)} companies")
         return research_results
-    
-    def _ensure_browser_use_browser(self):
-        """Lazy init browser-use browser (only needed for company research)"""
-        if self.browser is None:
-            self.browser = self.session_manager.get_browser(headless=False)
-            self.company_researcher.browser = self.browser
-            logger.info("Created browser-use browser for company research")
-    
+
+    @staticmethod
+    def _research_has_content(research: CompanyResearch) -> bool:
+        return any(
+            research.linkedin_page_summary,
+            research.linkedin_about_summary,
+            research.website_summary,
+        )
+
     async def _research_single_company(self, job: JobListing) -> Optional[CompanyResearch]:
-        """Research a single company"""
+        """Research a single company, reusing existing named research when present."""
         try:
-            self._ensure_browser_use_browser()
-            research = await self.company_researcher.research_company(job)
-            return research
+            existing = await self.db.get_company_research_by_name(job.company)
+            if existing and self._research_has_content(existing):
+                logger.info(
+                    f"Reusing existing research for {job.company} on job {job.job_id}"
+                )
+                return existing.model_copy(update={"job_id": job.job_id or ""})
+
+            return await self.company_researcher.research_company(job)
         except Exception as e:
-            logger.error(f"Error researching company {job.company}: {e}")
+            logger.error(f"Error researching company {job.company}: {e}", exc_info=True)
             return None
-    
-    
+
+    async def generate_messages(
+        self,
+        jobs: Optional[List[JobListing]] = None,
+        job_ids: Optional[List[str]] = None,
+    ) -> Dict[str, GeneratedMessage]:
+        """Generate personalized drafts for jobs that have company research."""
+        logger.info("Starting message generation phase...")
+
+        if not jobs:
+            if job_ids:
+                jobs = []
+                for job_id in job_ids:
+                    job = await self.db.get_job_by_id(job_id)
+                    if job:
+                        jobs.append(job)
+            else:
+                jobs = await self.db.get_jobs_for_generation(limit=100)
+
+        if not jobs:
+            logger.warning("No jobs found for message generation")
+            return {}
+
+        use_template = os.getenv("USE_TEMPLATE_MODE", "false").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if use_template:
+            logger.info("Using TemplateDraftGenerator (USE_TEMPLATE_MODE=true)")
+            generator = TemplateDraftGenerator()
+        else:
+            logger.info("Using DraftGenerator (OpenRouter AI mode)")
+            generator = DraftGenerator(db=self.db, model=self.model)
+
+        logger.info(f"Generating messages for {len(jobs)} jobs...")
+        message_results: Dict[str, GeneratedMessage] = {}
+
+        for job in jobs:
+            try:
+                research = await self.db.get_company_research(job.job_id)
+                if not research:
+                    research = await self.db.get_company_research_by_name(job.company)
+                if not research or not self._research_has_content(research):
+                    logger.warning(
+                        f"Skipping message for job {job.job_id}: no usable research"
+                    )
+                    continue
+
+                message = await generator.generate_draft(job, research)
+                if not message or not (message.message_text or "").strip():
+                    logger.error(f"Empty draft for job {job.job_id}; skipping")
+                    continue
+
+                message_results[job.job_id] = message
+                await self.db.save_message(job.job_id, message)
+                await self.db.update_job_status(job.job_id, "draft_generated")
+                logger.info(
+                    f"✓ Draft saved for {job.company} ({len(message.message_text)} chars)"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error generating message for job {job.job_id}: {e}",
+                    exc_info=True,
+                )
+
+        logger.info(f"Generated {len(message_results)} messages")
+        return message_results
+
     async def run_full_pipeline(
         self,
         keywords: str,
@@ -169,38 +250,64 @@ class Orchestrator:
         job_type: Optional[str] = None,
         max_results: int = 50,
         skip_research: bool = False,
-        skip_messages: bool = False
+        skip_messages: bool = False,
     ) -> List[JobPipeline]:
-        """
-        Run the complete pipeline: scrape -> research -> generate messages
-        
-        Args:
-            keywords: Job search keywords
-            location: Location filter
-            experience_level: Experience level filter
-            job_type: Job type filter
-            max_results: Maximum number of jobs
-            skip_research: Skip company research phase
-            skip_messages: Skip message generation phase
-        
-        Returns:
-            List of JobPipeline objects
-        """
+        """Run scrape -> research -> message generation."""
         logger.info("=" * 60)
         logger.info("Starting full LinkedIn automation pipeline")
         logger.info("=" * 60)
-        
-        # Phase 1: Scrape jobs
-        jobs = await self.scrape_jobs(
-            keywords=keywords,
-            location=location,
-            experience_level=experience_level,
-            job_type=job_type,
-            max_results=max_results
-        )
-        
-        if not jobs:
-            logger.warning("No jobs found. Pipeline stopped.")
-            return []
-        logger.info(jobs)
-        return []
+
+        try:
+            jobs = await self.scrape_jobs(
+                keywords=keywords,
+                location=location,
+                experience_level=experience_level,
+                job_type=job_type,
+                max_results=max_results,
+            )
+
+            if not jobs:
+                logger.warning("No jobs found. Pipeline stopped.")
+                return []
+
+            logger.info(f"Scraped and saved {len(jobs)} jobs")
+
+            research_results: Dict[str, CompanyResearch] = {}
+            if not skip_research:
+                research_results = await self.research_companies(jobs=jobs)
+            else:
+                logger.info("Skipping company research phase")
+
+            message_results: Dict[str, GeneratedMessage] = {}
+            if not skip_messages:
+                message_results = await self.generate_messages(jobs=jobs)
+            else:
+                logger.info("Skipping message generation phase")
+
+            pipelines = [
+                JobPipeline(
+                    job=job,
+                    research=research_results.get(job.job_id),
+                    message=message_results.get(job.job_id),
+                )
+                for job in jobs
+            ]
+
+            logger.info("=" * 60)
+            logger.info(f"Pipeline completed. Processed {len(pipelines)} jobs")
+            logger.info(
+                f"Research ok={sum(1 for p in pipelines if p.research)} "
+                f"Messages ok={sum(1 for p in pipelines if p.message)}"
+            )
+            logger.info("=" * 60)
+            return pipelines
+        finally:
+            await self.close()
+
+    async def get_pipelines(
+        self,
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+    ) -> List[JobPipeline]:
+        """Get pipelines from database"""
+        return await self.db.get_all_pipelines(filters=filters, limit=limit)
