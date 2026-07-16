@@ -154,9 +154,11 @@ class Orchestrator:
     @staticmethod
     def _research_has_content(research: CompanyResearch) -> bool:
         return any(
-            research.linkedin_page_summary,
-            research.linkedin_about_summary,
-            research.website_summary,
+            (
+                research.linkedin_page_summary,
+                research.linkedin_about_summary,
+                research.website_summary,
+            )
         )
 
     async def _research_single_company(self, job: JobListing) -> Optional[CompanyResearch]:
