@@ -1,184 +1,277 @@
 # LinkedIn Job Automation Tool
 
-Automated tool for scraping LinkedIn jobs, researching companies, and generating personalized messages using browser-use and OpenRouter LLM.
+Scrape LinkedIn jobs, generate referral message drafts, and sync everything to a Google Sheet — ready for you to apply and reach out manually.
+
+**Default workflow:** scrape → template message → sheet. No company research, no LLM calls, no extra LinkedIn browsing.
 
 ## Features
 
-- **Job Scraping**: Automatically scrape LinkedIn job listings using browser-use
-- **Company Research**: Research each company using browser automation
-- **Message Generation**: Generate personalized messages using OpenRouter LLM API
-- **MongoDB Storage**: All data stored in MongoDB for easy querying and management
-- **Export**: Export results to JSON or CSV for review
+- **Job scraping** — Playwright over a persistent Chrome profile (CDP attach)
+- **Template messages** — Fixed referral note with job URL, company, role, and category-matched CV link (default)
+- **AI messages** — Optional OpenRouter LLM drafts when company research is enabled
+- **Google Sheets** — Single `Jobs` tab with job links, locations, and messages (deduped by job ID)
+- **MongoDB** — Jobs, research, and messages stored for querying and export
+- **Scheduled daemon** — Cron-style scrape / enrich / draft stages via `scripts/pipeline_daemon.py`
+
+## Quick start
+
+```bash
+# 1. Install dependencies
+uv sync
+source .venv/bin/activate
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env — see Setup below
+
+# 3. Log into LinkedIn once (persistent browser profile)
+python scripts/linkedin_login_once.py
+
+# 4. Run pipeline
+python main.py --keywords "software engineer" --location "Singapore" --max-results 5
+```
+
+Open your Google Sheet — each row has a job URL (column E) and a referral message (column H).
 
 ## Setup
 
-1. **Install uv (if not already installed):**
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   # or on macOS with Homebrew
-   brew install uv
+### 1. Dependencies
+
+```bash
+uv sync
+source .venv/bin/activate   # macOS/Linux
+```
+
+Or with `requirements.txt`:
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+### 2. Environment variables
+
+Copy `.env.example` to `.env` and configure:
+
+| Variable | Required | Description |
+|---|---|---|
+| `MONGODB_URI` | Yes | MongoDB connection string |
+| `LINKEDIN_BROWSER_PROFILE_DIR` | No | Persistent Chrome profile dir (default: `.linkedin_browser_profile/`) |
+| `LINKEDIN_CDP_PORT` | No | CDP port for Chrome attach (default: `9222`) |
+| `GOOGLE_SHEETS_SPREADSHEET_ID` | For Sheets | Spreadsheet ID from the sheet URL |
+| `GOOGLE_APPLICATION_CREDENTIALS` | For Sheets | Path to Google service account JSON |
+| `OPENROUTER_API_KEY` | AI mode only | OpenRouter API key |
+| `MODEL_NAME` | AI mode only | e.g. `anthropic/claude-sonnet-4` |
+| `USE_TEMPLATE_MODE` | No | Overrides `pipeline_config.yaml` (`true` / `false`) |
+
+### 3. LinkedIn login (one-time)
+
+Automation uses a **dedicated Chrome profile**, not your daily browser:
+
+```bash
+python scripts/linkedin_login_once.py
+```
+
+Log in manually in the window that opens. The session persists on disk. Re-run when LinkedIn expires the session.
+
+### 4. MongoDB
+
+- **Local:** `mongodb://localhost:27017/linkedin_automate`
+- **Atlas:** create a free cluster at [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas)
+
+### 5. Google Sheets (optional)
+
+1. Create a Google Cloud service account with Sheets API access
+2. Share your spreadsheet with the service account email (Editor)
+3. Set in `.env`:
+   ```
+   GOOGLE_APPLICATION_CREDENTIALS=./your-service-account.json
+   GOOGLE_SHEETS_SPREADSHEET_ID=your_spreadsheet_id
+   ```
+4. Enable in `scripts/pipeline_config.yaml`:
+   ```yaml
+   google_sheets:
+     enabled: true
    ```
 
-2. **Create virtual environment and install dependencies:**
-   
-   **Option A: Using uv sync (recommended - uses pyproject.toml)**
-   ```bash
-   # This creates venv and installs all dependencies automatically
-   uv sync
-   
-   # Activate the virtual environment
-   source .venv/bin/activate  # On macOS/Linux
-   # or
-   .venv\Scripts\activate  # On Windows
-   ```
-   
-   **Option B: Using uv pip (uses requirements.txt)**
-   ```bash
-   # Create virtual environment
-   uv venv
-   
-   # Activate virtual environment
-   source .venv/bin/activate  # On macOS/Linux
-   # or
-   .venv\Scripts\activate  # On Windows
-   
-   # Install dependencies
-   uv pip install -r requirements.txt
-   ```
+**Sheet layout** (single `Jobs` worksheet):
 
-3. **Install browser-use browser (Chromium):**
-   ```bash
-   uvx browser-use install
-   ```
+| A | B | C | D | E | F | G | H |
+|---|---|---|---|---|---|---|---|
+| Job ID | Job Title | Company | Location | Job URL | Company URL | Search Query | Message |
 
-3. **Set up environment variables:**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys
-   ```
+New jobs are appended (existing job IDs skipped). Messages are written to column H after draft generation.
 
-4. **Set up MongoDB:**
-   - **Local MongoDB**: Install MongoDB locally and use `mongodb://localhost:27017/linkedin_automate`
-   - **MongoDB Atlas**: Create a free cluster at https://www.mongodb.com/cloud/atlas and use the connection string
-   - Update `MONGODB_URI` in `.env`
+### 6. AI mode (optional)
 
-5. **Get API keys and configure:**
-   - **OpenRouter API key**: Get one at https://openrouter.ai/keys
-   - Add to `.env` as `OPENROUTER_API_KEY`
-   - **Model selection**: Set `MODEL_NAME` in `.env`
-     - Examples: `openai/gpt-4o`, `google/gemini-pro`, `anthropic/claude-sonnet-4`
-     - See available models at https://openrouter.ai/models
+Only needed if you disable template mode and use `--with-research`:
 
-6. **Export LinkedIn cookies (one-time setup, repeat when session expires):**
-   ```bash
-   # Log into LinkedIn in Chrome first, then run:
-   python scripts/export_linkedin_cookies.py
-   ```
-   - **macOS**: Requires Full Disk Access for Terminal (System Settings → Privacy & Security)
-   - Uses your Chrome profile from `BROWSER_PROFILE_DIRECTORY` in `.env` (default: Profile 3)
-   - Creates `linkedin_storage_state.json` with your session
-   - Re-run when LinkedIn logs you out (typically every few weeks)
+- Get an API key at [openrouter.ai/keys](https://openrouter.ai/keys)
+- Set `OPENROUTER_API_KEY` and `MODEL_NAME` in `.env`
+- Set `generator.use_template_mode: false` in `scripts/pipeline_config.yaml`
 
 ## Usage
 
-### Run Full Pipeline
+### Run full pipeline
 
-Scrape jobs, research companies, and generate messages:
+Default: scrape → template drafts → Google Sheet (no research).
 
 ```bash
-# Basic usage
-python main.py --keywords "software engineer" --location "San Francisco"
+# Basic
+python main.py --keywords "software engineer" --location "Singapore"
 
-# With filters
-python main.py --keywords "python developer" --location "Remote" --experience-level "Mid" --max-results 20
+# Limit results
+python main.py --keywords "software engineer" --location "Singapore" --max-results 10
 
-# Skip research or message generation
-python main.py --keywords "data scientist" --skip-research
-python main.py --keywords "backend engineer" --skip-messages
+# Optional: company research + AI drafts (slower, more LinkedIn traffic)
+python main.py --keywords "software engineer" --location "Singapore" --with-research
+
+# Scrape only (no messages)
+python main.py --keywords "software engineer" --skip-messages
 ```
 
-### List Jobs
+### Message template
 
-View jobs stored in the database:
+Template file: `golden_drafts/linkedin_note_template.md`
+
+```
+Hey [Name],
+
+I just applied to [CompanyName] for [JobRole] role
+job url: [JobUrl]
+
+could you please refer me?
+CV: [CvUrl] (6+ YOE)
+Github: https://github.com/RMartires
+```
+
+- `[Name]` — fill in manually when messaging someone
+- `[CvUrl]` — picked by job title category (backend / fullstack / data-AI)
+- Edit the template file to change the message; no code changes needed
+
+### List jobs
 
 ```bash
-# List all jobs
 python main.py --list
-
-# List pending jobs
-python main.py --list --status pending --limit 50
+python main.py --list --status draft_generated --limit 50
 ```
 
-### Export Data
-
-Export jobs and messages to JSON or CSV:
+### Export data
 
 ```bash
-# Export pending messages to CSV
-python main.py --export csv --status pending --output messages.csv
-
-# Export all jobs to JSON
+python main.py --export csv --status draft_generated --output jobs.csv
 python main.py --export json --output jobs.json
-
-# Export with filters
-python main.py --export csv --company "Google" --date-from 2025-02-01 --date-to 2025-02-18
+python main.py --export csv --company "Google" --date-from 2026-01-01
 ```
 
-### Command Line Options
+### Scheduled daemon
 
-- `--keywords`: Job search keywords (required for scraping)
-- `--location`: Location filter
-- `--experience-level`: Filter by experience (Entry, Mid, Senior)
-- `--job-type`: Filter by job type
-- `--max-results`: Maximum number of jobs to scrape (default: 50)
-- `--skip-research`: Skip company research phase
-- `--skip-messages`: Skip message generation phase
-- `--export`: Export format (json or csv)
-- `--output`: Output filename
-- `--status`: Filter by status
-- `--company`: Filter by company name
-- `--date-from`: Filter from date (YYYY-MM-DD)
-- `--date-to`: Filter to date (YYYY-MM-DD)
-- `--list`: List jobs from database
-- `--limit`: Limit for list command (default: 20)
+Run scrape, enrich, and draft stages on a schedule:
+
+```bash
+python scripts/pipeline_daemon.py
+```
+
+Configure schedules and search targets in `scripts/pipeline_config.yaml`.
+
+Individual stages (thin wrappers around the orchestrator):
+
+```bash
+python scripts/scrape_jobs.py --keywords "software engineer" --location "Singapore" --max-jobs 10
+python scripts/generate_drafts.py --batch-size 10
+python scripts/enrich_companies.py --batch-size 10   # only if using AI + research
+```
+
+## Command-line options
+
+| Flag | Description |
+|---|---|
+| `--keywords` | Job search keywords (required for pipeline) |
+| `--location` | Location filter |
+| `--experience-level` | Entry, Mid, or Senior |
+| `--job-type` | e.g. Full-time, Contract |
+| `--max-results` | Max jobs to scrape (default: 50) |
+| `--with-research` | Run company research (off by default) |
+| `--skip-messages` | Skip message generation |
+| `--export` | Export format: `json` or `csv` |
+| `--output` | Export filename |
+| `--status` | Filter by job/message status |
+| `--list` | List jobs from database |
+
+## Pipeline stages
+
+```mermaid
+flowchart LR
+    scrape[Scrape jobs] --> sheet[Google Sheet]
+    scrape --> draft[Template draft]
+    draft --> sheet
+    scrape -.->|optional| research[Company research]
+    research -.->|AI mode| aiDraft[AI draft]
+    aiDraft -.-> sheet
+```
+
+| Stage | Default | What it does |
+|---|---|---|
+| Scrape | On | LinkedIn job search → MongoDB + Sheet |
+| Research | Off | Company LinkedIn/website summaries (for AI drafts) |
+| Draft | On | Template or AI referral message → MongoDB + Sheet |
 
 ## Troubleshooting
 
-### LinkedIn storage state not found
-
-If you see `LinkedIn storage state not found`, run the export script first:
+### LinkedIn not logged in
 
 ```bash
-python scripts/export_linkedin_cookies.py
+python scripts/linkedin_login_once.py
 ```
 
-### Full Disk Access required (macOS)
+Complete login / 2FA in the Chrome window. Re-run when the session expires.
 
-The cookie export needs to read Chrome's encrypted cookie database. Grant **Full Disk Access** to Terminal (or your IDE's terminal) in System Settings → Privacy & Security → Full Disk Access.
+### Chrome profile lock / "Something went wrong" popup
 
-### LinkedIn session expired
+Close all Chrome windows using the automation profile, then retry. The session manager clears stale lock files automatically.
 
-If the scraper shows LinkedIn's login page, your cookies have expired. Re-export:
+### Google Sheets sync skipped
 
-```bash
-python scripts/export_linkedin_cookies.py
+Check that all three are set:
+
+- `GOOGLE_SHEETS_SPREADSHEET_ID` in `.env`
+- `GOOGLE_APPLICATION_CREDENTIALS` pointing to a valid JSON key
+- `google_sheets.enabled: true` in `pipeline_config.yaml`
+
+The spreadsheet must be shared with the service account email.
+
+### "LinkedIn Member" on company People pages
+
+LinkedIn limits people browsing on free accounts (commercial use limit). Template mode avoids this by skipping company People-page visits. People scraping is not enabled by default.
+
+## Project structure
+
 ```
-
-## Project Structure
-
-```
-linkdin-automate/
-├── src/
-│   ├── models.py              # Pydantic data models
-│   ├── database.py            # MongoDB operations
-│   ├── job_scraper.py         # LinkedIn job scraping
-│   ├── company_researcher.py  # Company research
-│   ├── message_generator.py   # Message generation
-│   ├── orchestrator.py        # Workflow orchestration
-│   └── utils/
-│       ├── export.py          # Export utilities
-│       └── logger.py          # Logging
-└── main.py                    # CLI entry point
+linkdin_tools/
+├── main.py                          # CLI entry point
+├── golden_drafts/
+│   └── linkedin_note_template.md    # Referral message template
+├── scripts/
+│   ├── pipeline_config.yaml         # Daemon + template mode + Sheets config
+│   ├── pipeline_daemon.py           # Scheduled pipeline
+│   ├── scrape_jobs.py
+│   ├── generate_drafts.py
+│   ├── enrich_companies.py
+│   └── linkedin_login_once.py
+└── src/
+    ├── orchestrator.py              # Pipeline orchestration + Sheets sync
+    ├── job_scraper_playwright.py    # LinkedIn job scraping
+    ├── company_researcher_playwright.py  # Optional company research
+    ├── template_draft_generator.py  # Template messages (default)
+    ├── draft_generator.py           # AI messages (OpenRouter)
+    ├── google_sheets_client.py      # Google Sheets integration
+    ├── session_manager.py           # Chrome CDP session management
+    ├── database.py                  # MongoDB operations
+    ├── models.py                    # Pydantic models
+    └── utils/
+        ├── config.py                # Pipeline config helpers
+        ├── export.py                # CSV/JSON export
+        └── linkedin.py              # Shared LinkedIn helpers
 ```
 
 ## License
