@@ -116,12 +116,15 @@ class Orchestrator:
 
         await self._ensure_playwright_browser()
 
+        skip_job_ids = await self.db.get_all_job_ids()
+
         jobs = await self.job_scraper.scrape_jobs(
             keywords=keywords,
             location=location,
             experience_level=experience_level,
             job_type=job_type,
             max_results=max_results,
+            skip_job_ids=skip_job_ids,
         )
 
         if jobs:

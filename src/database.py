@@ -1,7 +1,7 @@
 """MongoDB database service for LinkedIn automation"""
 
 import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Set, Dict, Any
 from datetime import datetime
 from pymongo import AsyncMongoClient
 from pymongo.errors import DuplicateKeyError
@@ -142,6 +142,15 @@ class Database:
             doc.pop("_id", None)
             return JobListing(**doc)
         return None
+
+    async def get_all_job_ids(self) -> Set[str]:
+        """Return all job IDs already in the database (for scrape dedupe)."""
+        ids: Set[str] = set()
+        async for doc in self.db.jobs.find({}, {"job_id": 1}):
+            jid = doc.get("job_id")
+            if jid:
+                ids.add(jid)
+        return ids
     
     async def update_job_status(self, job_id: str, status: str) -> bool:
         """Update job status"""

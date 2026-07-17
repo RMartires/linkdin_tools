@@ -4,7 +4,7 @@ import os
 import re
 import asyncio
 import time
-from typing import List, Optional
+from typing import List, Optional, Set
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
 from dotenv import load_dotenv
@@ -1905,7 +1905,8 @@ class JobScraperPlaywright:
         location: Optional[str] = None,
         experience_level: Optional[str] = None,
         job_type: Optional[str] = None,
-        max_results: int = 10
+        max_results: int = 10,
+        skip_job_ids: Optional[Set[str]] = None,
     ) -> List[JobListing]:
         """
         Scrape LinkedIn jobs
@@ -1921,6 +1922,9 @@ class JobScraperPlaywright:
             List of JobListing objects
         """
         logger.info(f"Starting job scrape: keywords='{keywords}', location='{location}', max_results={max_results}")
+        skip_job_ids = skip_job_ids or set()
+        if skip_job_ids:
+            logger.info(f"Skipping {len(skip_job_ids)} job IDs already in database")
         
         try:
             # Get Playwright page from persistent LinkedIn profile
@@ -1950,9 +1954,11 @@ class JobScraperPlaywright:
             extracted_job_ids = set()
             page_num = 1
 
+            scroll_target = max_results + len(skip_job_ids)
+
             while True:
                 # Scroll to load jobs on current page
-                await self._scroll_job_list(page, max_results)
+                await self._scroll_job_list(page, scroll_target)
 
                 # Extract job data - get list of cards
                 logger.info(f"Extracting job data from page {page_num}...")
@@ -2168,6 +2174,10 @@ class JobScraperPlaywright:
                             logger.debug(f"Skipping duplicate job ID: {job_id}")
                             continue
                         extracted_job_ids.add(job_id)
+
+                        if job_id in skip_job_ids:
+                            logger.info(f"Skipping already-known job {job_id}")
+                            continue
 
                         logger.info(f"✓ Extracted job ID {job_id} from URL after clicking card {i+1}")
 
