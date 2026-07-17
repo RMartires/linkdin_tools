@@ -11,7 +11,7 @@ from src.draft_generator import DraftGenerator
 from src.template_draft_generator import TemplateDraftGenerator
 from src.session_manager import SessionManager
 from src.models import JobListing, CompanyResearch, GeneratedMessage, JobPipeline
-from src.google_sheets_client import upsert_jobs, update_job_message
+from src.google_sheets_client import upsert_jobs, update_job_message, _format_date_scraped
 from src.utils.config import load_pipeline_config, get_use_template_mode
 from src.utils.logger import logger
 
@@ -86,7 +86,7 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Google Sheets job sync failed (non-fatal): {e}")
 
-    async def _sync_message_to_sheets(self, job_id: str, message: GeneratedMessage):
+    async def _sync_message_to_sheets(self, job: JobListing, message: GeneratedMessage):
         spreadsheet_id = self._sheets_spreadsheet_id()
         if not spreadsheet_id:
             return
@@ -94,9 +94,11 @@ class Orchestrator:
             await asyncio.to_thread(
                 update_job_message,
                 spreadsheet_id,
-                job_id,
+                job.job_id,
                 message.message_text,
                 message.personalized_drafts,
+                "draft_generated",
+                _format_date_scraped(job),
             )
         except Exception as e:
             logger.warning(f"Google Sheets message sync failed (non-fatal): {e}")
@@ -285,7 +287,7 @@ class Orchestrator:
                 await self.db.save_message(job.job_id, message)
                 await self.db.update_job_status(job.job_id, "draft_generated")
                 await self.db.clear_generate_retry_counters(job.job_id)
-                await self._sync_message_to_sheets(job.job_id, message)
+                await self._sync_message_to_sheets(job, message)
                 logger.info(
                     f"✓ Draft saved for {job.company} ({len(message.message_text)} chars)"
                 )

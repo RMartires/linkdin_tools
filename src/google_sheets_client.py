@@ -1,10 +1,12 @@
 """Google Sheets client for pipeline job tracking.
 
-Single "Jobs" worksheet layout (columns A-H):
-    Job ID | Job Title | Company | Location | Job URL | Company URL | Search Query | Message
+Single "Jobs" worksheet layout (columns A-J):
+    Job ID | Job Title | Company | Location | Job URL | Company URL |
+    Search Query | Message | Status | Date Scraped
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,9 +17,12 @@ WORKSHEET_TITLE = "Jobs"
 HEADERS = [
     "Job ID", "Job Title", "Company", "Location",
     "Job URL", "Company URL", "Search Query", "Message",
+    "Status", "Date Scraped",
 ]
 NUM_COLS = len(HEADERS)
-MESSAGE_COL = NUM_COLS  # column H
+MESSAGE_COL = 8   # column H (1-based)
+STATUS_COL = 9    # column I
+DATE_SCRAPED_COL = 10  # column J
 
 _gc = None
 
@@ -40,10 +45,26 @@ def _get_client():
         raise
 
 
+def _format_date_scraped(job: JobListing) -> str:
+    """Format scraped date for the sheet (YYYY-MM-DD)."""
+    dt = job.scraped_at or job.created_at
+    if not dt:
+        return datetime.utcnow().strftime("%Y-%m-%d")
+    return dt.strftime("%Y-%m-%d")
+
+
+def _ensure_worksheet_headers(worksheet) -> None:
+    """Keep header row in sync when columns are added."""
+    existing = worksheet.row_values(1)
+    if existing != HEADERS:
+        worksheet.update("A1", [HEADERS])
+
+
 def _get_jobs_worksheet(spreadsheet):
     """Get the single Jobs worksheet, creating it with headers if missing."""
     try:
         worksheet = spreadsheet.worksheet(WORKSHEET_TITLE)
+        _ensure_worksheet_headers(worksheet)
     except Exception:
         worksheet = spreadsheet.add_worksheet(title=WORKSHEET_TITLE, rows=1000, cols=NUM_COLS)
         worksheet.update("A1", [HEADERS])
@@ -61,6 +82,8 @@ def _job_to_row(job: JobListing, search_query: str) -> List[str]:
         str(job.company_url) if job.company_url else "",
         search_query,
         "",  # Message - filled after draft generation
+        job.status or "scraped",
+        _format_date_scraped(job),
     ]
 
 
@@ -106,12 +129,14 @@ def update_job_message(
     job_id: str,
     message_text: str,
     personalized_drafts: Optional[List[Dict[str, Any]]] = None,
+    status: Optional[str] = None,
+    date_scraped: Optional[str] = None,
 ) -> bool:
     """
-    Write the generated message into the Message column for a job row.
+    Write the generated message (and optional status) for a job row.
 
     For per-person drafts (personalized_drafts): one row per person, job info
-    (A-G) repeated, each row carrying that person's message.
+    (A-G, I-J) repeated, each row carrying that person's message in column H.
 
     Returns True if updated successfully, False otherwise.
     """
@@ -129,12 +154,17 @@ def update_job_message(
 
         if personalized_drafts:
             existing_row = worksheet.row_values(row)
-            job_info = (existing_row + [""] * NUM_COLS)[: NUM_COLS - 1]
-            rows_to_write = [
-                job_info + [d.get("message_text", "") or ""]
-                for d in personalized_drafts
-            ]
-            worksheet.update(f"A{row}:H{row}", [rows_to_write[0]])
+            base = (existing_row + [""] * NUM_COLS)[:NUM_COLS]
+            if status:
+                base[STATUS_COL - 1] = status
+            if date_scraped:
+                base[DATE_SCRAPED_COL - 1] = date_scraped
+            rows_to_write = []
+            for d in personalized_drafts:
+                row_data = list(base)
+                row_data[MESSAGE_COL - 1] = d.get("message_text", "") or ""
+                rows_to_write.append(row_data)
+            worksheet.update(f"A{row}:J{row}", [rows_to_write[0]])
             if len(rows_to_write) > 1:
                 worksheet.insert_rows(rows_to_write[1:], row=row + 1)
             logger.info(
@@ -142,6 +172,10 @@ def update_job_message(
             )
         else:
             worksheet.update_cell(row, MESSAGE_COL, message_text)
+            if status:
+                worksheet.update_cell(row, STATUS_COL, status)
+            if date_scraped:
+                worksheet.update_cell(row, DATE_SCRAPED_COL, date_scraped)
             logger.info(f"Sheets: wrote message for job {job_id}")
 
         return True
