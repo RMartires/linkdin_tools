@@ -11,21 +11,25 @@ from src.draft_generator import DraftGenerator
 from src.template_draft_generator import TemplateDraftGenerator
 from src.session_manager import SessionManager
 from src.models import JobListing, CompanyResearch, GeneratedMessage, JobPipeline
+from src.google_sheets_client import upsert_jobs, update_job_message
+from src.utils.config import load_pipeline_config, get_use_template_mode
 from src.utils.logger import logger
 
 
 class Orchestrator:
     """Orchestrates the full LinkedIn automation pipeline"""
 
-    def __init__(self, db: Database, model: Optional[str] = None):
+    def __init__(self, db: Database, model: Optional[str] = None, headless: bool = False):
         """Initialize orchestrator with database connection
 
         Args:
             db: Database instance
             model: Optional model name to override MODEL_NAME env var
+            headless: Run browser headless (from pipeline config for daemon runs)
         """
         self.db = db
         self.model = model
+        self.headless = headless
         self.session_manager = SessionManager()
 
         # Single shared CDP session for scrape + research (avoid profile lock races)
@@ -38,16 +42,16 @@ class Orchestrator:
         self.company_researcher = CompanyResearcherPlaywright(
             db=db,
             session_manager=self.session_manager,
-            headless=False,
+            headless=headless,
         )
 
     async def _ensure_playwright_browser(self):
         """Ensure persistent LinkedIn profile context is ready and authenticated"""
         if not self.playwright_browser:
-            page = await self.session_manager.get_page(headless=False)
+            page = await self.session_manager.get_page(headless=self.headless)
             await self.session_manager.assert_logged_in(page)
             self.playwright_browser = await self.session_manager.get_playwright_browser(
-                headless=False
+                headless=self.headless
             )
             self.job_scraper.playwright_browser = self.playwright_browser
             self.company_researcher.playwright_browser = self.playwright_browser
@@ -59,6 +63,43 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"session_manager.close error: {e}")
         self.playwright_browser = None
+
+    # --- Google Sheets sync (non-fatal) ---
+
+    @staticmethod
+    def _sheets_spreadsheet_id() -> Optional[str]:
+        """Return spreadsheet ID if Sheets sync is enabled, else None."""
+        spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
+        if not spreadsheet_id:
+            return None
+        config = load_pipeline_config()
+        if not config.get("google_sheets", {}).get("enabled"):
+            return None
+        return spreadsheet_id
+
+    async def _sync_jobs_to_sheets(self, jobs: List[JobListing], search_query: str):
+        spreadsheet_id = self._sheets_spreadsheet_id()
+        if not spreadsheet_id:
+            return
+        try:
+            await asyncio.to_thread(upsert_jobs, spreadsheet_id, jobs, search_query)
+        except Exception as e:
+            logger.warning(f"Google Sheets job sync failed (non-fatal): {e}")
+
+    async def _sync_message_to_sheets(self, job_id: str, message: GeneratedMessage):
+        spreadsheet_id = self._sheets_spreadsheet_id()
+        if not spreadsheet_id:
+            return
+        try:
+            await asyncio.to_thread(
+                update_job_message,
+                spreadsheet_id,
+                job_id,
+                message.message_text,
+                message.personalized_drafts,
+            )
+        except Exception as e:
+            logger.warning(f"Google Sheets message sync failed (non-fatal): {e}")
 
     async def scrape_jobs(
         self,
@@ -83,7 +124,13 @@ class Orchestrator:
 
         if jobs:
             await self.db.save_jobs(jobs)
+            for job in jobs:
+                if job.job_id:
+                    await self.db.mark_job_scraped(job.job_id)
             logger.info(f"Saved {len(jobs)} jobs to database")
+
+            search_query = f"{keywords} ({location})" if location else keywords
+            await self._sync_jobs_to_sheets(jobs, search_query)
 
         return jobs
 
@@ -181,8 +228,14 @@ class Orchestrator:
         jobs: Optional[List[JobListing]] = None,
         job_ids: Optional[List[str]] = None,
     ) -> Dict[str, GeneratedMessage]:
-        """Generate personalized drafts for jobs that have company research."""
+        """Generate drafts for jobs.
+
+        Template mode needs no company research (works straight from scraped jobs);
+        AI mode still requires usable research.
+        """
         logger.info("Starting message generation phase...")
+
+        use_template = get_use_template_mode()
 
         if not jobs:
             if job_ids:
@@ -192,19 +245,15 @@ class Orchestrator:
                     if job:
                         jobs.append(job)
             else:
-                jobs = await self.db.get_jobs_for_generation(limit=100)
+                statuses = ["scraped", "enriched"] if use_template else ["enriched"]
+                jobs = await self.db.get_jobs_for_generation(limit=100, statuses=statuses)
 
         if not jobs:
             logger.warning("No jobs found for message generation")
             return {}
 
-        use_template = os.getenv("USE_TEMPLATE_MODE", "false").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
         if use_template:
-            logger.info("Using TemplateDraftGenerator (USE_TEMPLATE_MODE=true)")
+            logger.info("Using TemplateDraftGenerator (template mode, no AI)")
             generator = TemplateDraftGenerator()
         else:
             logger.info("Using DraftGenerator (OpenRouter AI mode)")
@@ -218,7 +267,10 @@ class Orchestrator:
                 research = await self.db.get_company_research(job.job_id)
                 if not research:
                     research = await self.db.get_company_research_by_name(job.company)
-                if not research or not self._research_has_content(research):
+
+                if not use_template and (
+                    not research or not self._research_has_content(research)
+                ):
                     logger.warning(
                         f"Skipping message for job {job.job_id}: no usable research"
                     )
@@ -232,6 +284,8 @@ class Orchestrator:
                 message_results[job.job_id] = message
                 await self.db.save_message(job.job_id, message)
                 await self.db.update_job_status(job.job_id, "draft_generated")
+                await self.db.clear_generate_retry_counters(job.job_id)
+                await self._sync_message_to_sheets(job.job_id, message)
                 logger.info(
                     f"✓ Draft saved for {job.company} ({len(message.message_text)} chars)"
                 )
@@ -251,10 +305,10 @@ class Orchestrator:
         experience_level: Optional[str] = None,
         job_type: Optional[str] = None,
         max_results: int = 50,
-        skip_research: bool = False,
+        skip_research: bool = True,
         skip_messages: bool = False,
     ) -> List[JobPipeline]:
-        """Run scrape -> research -> message generation."""
+        """Run scrape -> (optional research) -> message generation."""
         logger.info("=" * 60)
         logger.info("Starting full LinkedIn automation pipeline")
         logger.info("=" * 60)

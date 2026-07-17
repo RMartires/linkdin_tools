@@ -1,6 +1,8 @@
 Hey [Name],
-I love everything about what [CompanyName] is doing, would love to give an interview
 
-I've scaled internal services to thousands of workflows and users, launching a Shopify app to 10k MAUs and handling 100M+ events/day.
+I just applied to [CompanyName] for [JobRole] role
+job url: [JobUrl]
 
-I applied to the [JobRole] role, could you refer me?
+could you please refer me?
+CV: [CvUrl] (6+ YOE)
+Github: https://github.com/RMartires

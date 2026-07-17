@@ -1,16 +1,24 @@
-"""Google Sheets client for pipeline job tracking"""
+"""Google Sheets client for pipeline job tracking.
+
+Single "Jobs" worksheet layout (columns A-H):
+    Job ID | Job Title | Company | Location | Job URL | Company URL | Search Query | Message
+"""
 
 import os
-import secrets
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.models import JobListing
 from src.utils.logger import logger
 
-# Lazy import gspread to avoid import errors when not configured
-_gspread = None
+WORKSHEET_TITLE = "Jobs"
+HEADERS = [
+    "Job ID", "Job Title", "Company", "Location",
+    "Job URL", "Company URL", "Search Query", "Message",
+]
+NUM_COLS = len(HEADERS)
+MESSAGE_COL = NUM_COLS  # column H
+
 _gc = None
 
 
@@ -32,139 +40,112 @@ def _get_client():
         raise
 
 
-def _generate_worksheet_title() -> str:
-    """Generate worksheet title: YYYY-MM-DD_<random_suffix>"""
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    suffix = secrets.token_hex(3)
-    return f"{date_str}_{suffix}"
+def _get_jobs_worksheet(spreadsheet):
+    """Get the single Jobs worksheet, creating it with headers if missing."""
+    try:
+        worksheet = spreadsheet.worksheet(WORKSHEET_TITLE)
+    except Exception:
+        worksheet = spreadsheet.add_worksheet(title=WORKSHEET_TITLE, rows=1000, cols=NUM_COLS)
+        worksheet.update("A1", [HEADERS])
+        logger.info(f"Created '{WORKSHEET_TITLE}' worksheet")
+    return worksheet
 
 
-def create_worksheet_and_append_jobs(
+def _job_to_row(job: JobListing, search_query: str) -> List[str]:
+    return [
+        job.job_id or "",
+        job.title or "",
+        job.company or "",
+        job.location or "",
+        str(job.url) if job.url else "",
+        str(job.company_url) if job.company_url else "",
+        search_query,
+        "",  # Message - filled after draft generation
+    ]
+
+
+def upsert_jobs(
     spreadsheet_id: str,
     jobs: List[JobListing],
     search_query: str = "",
-    credentials_path: Optional[str] = None,
-) -> Optional[str]:
+) -> int:
     """
-    Create a new worksheet with today's date + random suffix and append job rows.
+    Append jobs to the single Jobs worksheet, skipping job IDs already present.
 
-    Columns: Job ID | Job Title | Company | LinkedIn Company URL | Search Query | Draft Generated
-
-    Args:
-        spreadsheet_id: Google Sheets spreadsheet ID
-        jobs: List of job listings to append
-        search_query: Search query string (title and location) to add to each row
-        credentials_path: Optional path to credentials file
-
-    Returns the worksheet title if successful, None otherwise.
+    Returns the number of rows appended (0 on no-op, -1 on failure).
     """
     try:
         gc = _get_client()
         spreadsheet = gc.open_by_key(spreadsheet_id)
+        worksheet = _get_jobs_worksheet(spreadsheet)
 
-        worksheet_title = _generate_worksheet_title()
-        worksheet = spreadsheet.add_worksheet(
-            title=worksheet_title,
-            rows=max(len(jobs) + 10, 100),
-            cols=6,
-        )
-
-        # Header row
-        headers = [
-            "Job ID", "Job Title", "Company", "LinkedIn Company URL", "Search Query",
-            "Draft Generated",
+        existing_ids = set(worksheet.col_values(1)[1:])  # skip header
+        new_rows = [
+            _job_to_row(job, search_query)
+            for job in jobs
+            if job.job_id and job.job_id not in existing_ids
         ]
-        worksheet.update("A1:F1", [headers])
 
-        # Data rows
-        rows = []
-        for job in jobs:
-            company_url = str(job.company_url) if job.company_url else ""
-            rows.append([
-                job.job_id or "",
-                job.title or "",
-                job.company or "",
-                company_url,
-                search_query,
-                "",  # Draft Generated - empty initially
-            ])
+        if new_rows:
+            worksheet.append_rows(new_rows, value_input_option="RAW")
 
-        if rows:
-            worksheet.update(f"A2:F{len(rows) + 1}", rows)
-
-        logger.info(f"Created worksheet '{worksheet_title}' with {len(jobs)} jobs")
-        return worksheet_title
+        skipped = len(jobs) - len(new_rows)
+        logger.info(
+            f"Sheets: appended {len(new_rows)} new jobs to '{WORKSHEET_TITLE}' "
+            f"({skipped} already present)"
+        )
+        return len(new_rows)
 
     except Exception as e:
-        logger.error(f"Failed to create worksheet and append jobs: {e}", exc_info=True)
-        return None
+        logger.error(f"Failed to upsert jobs to Google Sheets: {e}", exc_info=True)
+        return -1
 
 
-def update_draft_in_latest_worksheet(
+def update_job_message(
     spreadsheet_id: str,
     job_id: str,
-    draft_value: str = "Yes",
+    message_text: str,
     personalized_drafts: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """
-    Find job_id across all worksheets and update Draft Generated (F) only.
+    Write the generated message into the Message column for a job row.
 
-    For multiple persons (personalized_drafts): one row per person, each with that person's draft.
-    Job info (A-E) is repeated on each row.
-
-    Args:
-        spreadsheet_id: Google Sheets spreadsheet ID
-        job_id: Job ID to find
-        draft_value: Value for Draft Generated column (F) - used when no personalized_drafts
-        personalized_drafts: Optional list of {name, profile_url, message_text} for per-contact drafts
+    For per-person drafts (personalized_drafts): one row per person, job info
+    (A-G) repeated, each row carrying that person's message.
 
     Returns True if updated successfully, False otherwise.
     """
     try:
         gc = _get_client()
         spreadsheet = gc.open_by_key(spreadsheet_id)
-        worksheets = spreadsheet.worksheets()
+        worksheet = _get_jobs_worksheet(spreadsheet)
 
-        if not worksheets:
-            logger.warning("No worksheets found in spreadsheet")
+        id_column = worksheet.col_values(1)
+        try:
+            row = id_column.index(job_id) + 1  # 1-based row number
+        except ValueError:
+            logger.warning(f"Could not find job_id '{job_id}' in '{WORKSHEET_TITLE}' worksheet")
             return False
 
-        for worksheet in reversed(worksheets):
-            cells = worksheet.findall(job_id)
-            if cells:
-                cell = cells[0]
-                row = cell.row
+        if personalized_drafts:
+            existing_row = worksheet.row_values(row)
+            job_info = (existing_row + [""] * NUM_COLS)[: NUM_COLS - 1]
+            rows_to_write = [
+                job_info + [d.get("message_text", "") or ""]
+                for d in personalized_drafts
+            ]
+            worksheet.update(f"A{row}:H{row}", [rows_to_write[0]])
+            if len(rows_to_write) > 1:
+                worksheet.insert_rows(rows_to_write[1:], row=row + 1)
+            logger.info(
+                f"Sheets: wrote {len(rows_to_write)} per-person messages for job {job_id}"
+            )
+        else:
+            worksheet.update_cell(row, MESSAGE_COL, message_text)
+            logger.info(f"Sheets: wrote message for job {job_id}")
 
-                # Read existing row to get job info (A-E)
-                existing_row = worksheet.row_values(row)
-                # Pad to 6 cols: Job ID, Job Title, Company, LinkedIn Company URL, Search Query, Draft
-                job_info = (existing_row + [""] * 6)[:5]
-
-                if personalized_drafts and len(personalized_drafts) > 0:
-                    # One row per person: draft (F) only
-                    rows_to_write = []
-                    for d in personalized_drafts:
-                        draft_text = d.get("message_text", "") or ""
-                        rows_to_write.append(job_info + [draft_text])
-                    # Update first row with person 1's data
-                    worksheet.update(f"A{row}:F{row}", [rows_to_write[0]])
-                    # Insert additional rows for persons 2..N below
-                    if len(rows_to_write) > 1:
-                        worksheet.insert_rows(rows_to_write[1:], row=row + 1)
-                    logger.info(
-                        f"Updated draft for job {job_id} in worksheet '{worksheet.title}' "
-                        f"({len(rows_to_write)} rows, one per person)"
-                    )
-                else:
-                    # Single row: write draft only to Draft Generated (F)
-                    worksheet.update(f"F{row}", [[draft_value]])
-                    logger.info(f"Updated draft for job {job_id} in worksheet '{worksheet.title}'")
-
-                return True
-
-        logger.warning(f"Could not find job_id '{job_id}' in any worksheet")
-        return False
+        return True
 
     except Exception as e:
-        logger.error(f"Failed to update draft for job {job_id}: {e}", exc_info=True)
+        logger.error(f"Failed to update message for job {job_id}: {e}", exc_info=True)
         return False

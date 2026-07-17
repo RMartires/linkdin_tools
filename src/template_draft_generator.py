@@ -67,21 +67,21 @@ class TemplateDraftGenerator:
         # backend (default)
         return "backend"
 
-    def build_message(self, job: JobListing, research: CompanyResearch) -> str:
-        """Replace placeholders with job/research data. [Name] stays for manual fill-in."""
+    def build_message(self, job: JobListing, research: Optional[CompanyResearch] = None) -> str:
+        """Replace placeholders with job data. [Name] stays for manual fill-in."""
         template = self._load_template()
-        message = (
-            template.replace("[CompanyName]", research.company_name)
-            .replace("[JobRole]", job.title)
-        )
-        # Append resume link based on job classification
+        company_name = research.company_name if research else job.company
         category = self._classify_job_title(job.title)
-        resume_url = RESUME_LINKS.get(category, RESUME_LINKS["backend"])
-        message += f"\n\nCV: {resume_url}"
-        return message
+        cv_url = RESUME_LINKS.get(category, RESUME_LINKS["backend"])
+        return (
+            template.replace("[CompanyName]", company_name)
+            .replace("[JobRole]", job.title)
+            .replace("[JobUrl]", str(job.url))
+            .replace("[CvUrl]", cv_url)
+        )
 
     async def generate_draft(
-        self, job: JobListing, research: CompanyResearch
+        self, job: JobListing, research: Optional[CompanyResearch] = None
     ) -> Optional[GeneratedMessage]:
         """
         Generate a draft from the template. Same signature as DraftGenerator.generate_draft

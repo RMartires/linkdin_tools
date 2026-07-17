@@ -270,10 +270,20 @@ class Database:
             jobs.append(JobListing(**doc))
         return jobs
     
-    async def get_jobs_for_generation(self, limit: int = 10, max_retries: int = 3) -> List[JobListing]:
-        """Get jobs ready for draft generation (status='enriched' and retry_count < max_retries)"""
+    async def get_jobs_for_generation(
+        self,
+        limit: int = 10,
+        max_retries: int = 3,
+        statuses: Optional[List[str]] = None,
+    ) -> List[JobListing]:
+        """Get jobs ready for draft generation (retry_count < max_retries).
+
+        By default only 'enriched' jobs qualify. Pass statuses=["scraped", "enriched"]
+        to also pick up jobs that skipped research (template mode).
+        """
+        statuses = statuses or ["enriched"]
         cursor = self.db.jobs.find({
-            "status": "enriched",
+            "status": {"$in": statuses},
             "generate_retry_count": {"$lt": max_retries}
         }).limit(limit)
         jobs = []
@@ -361,9 +371,9 @@ class Database:
         return result.modified_count > 0
     
     async def mark_job_scraped(self, job_id: str) -> bool:
-        """Mark job as scraped"""
+        """Mark job as scraped (without regressing jobs further along the pipeline)"""
         result = await self.db.jobs.update_one(
-            {"job_id": job_id},
+            {"job_id": job_id, "status": {"$nin": list(PROTECTED_JOB_STATUSES)}},
             {
                 "$set": {
                     "status": "scraped",

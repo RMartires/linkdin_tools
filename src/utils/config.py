@@ -1,5 +1,6 @@
 """Pipeline configuration utilities"""
 
+import os
 import yaml
 from pathlib import Path
 from typing import Optional, Dict
@@ -67,6 +68,22 @@ def get_headless_mode(config: Optional[Dict] = None) -> bool:
     headless = browser_config.get("headless", False)
     
     return bool(headless)
+
+
+def get_use_template_mode(config: Optional[Dict] = None) -> bool:
+    """
+    Single source of truth for template mode.
+
+    USE_TEMPLATE_MODE env var overrides generator.use_template_mode in
+    pipeline_config.yaml.
+    """
+    env_value = os.getenv("USE_TEMPLATE_MODE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes")
+
+    if config is None:
+        config = load_pipeline_config()
+    return bool(config.get("generator", {}).get("use_template_mode", False))
 
 
 def clear_config_cache():

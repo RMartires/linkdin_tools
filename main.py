@@ -17,7 +17,7 @@ async def run_pipeline(
     experience_level: Optional[str] = None,
     job_type: Optional[str] = None,
     max_results: int = 50,
-    skip_research: bool = False,
+    skip_research: bool = True,
     skip_messages: bool = False
 ):
     """Run the full automation pipeline"""
@@ -169,7 +169,7 @@ Examples:
     parser.add_argument('--experience-level', type=str, choices=['Entry', 'Mid', 'Senior'], help='Experience level')
     parser.add_argument('--job-type', type=str, help='Job type (e.g., Full-time, Contract)')
     parser.add_argument('--max-results', type=int, default=50, help='Maximum number of jobs to scrape')
-    parser.add_argument('--skip-research', action='store_true', help='Skip company research phase')
+    parser.add_argument('--with-research', action='store_true', help='Run company research phase (off by default; template messages do not need it)')
     parser.add_argument('--skip-messages', action='store_true', help='Skip message generation phase')
     
     # Export arguments
@@ -216,7 +216,7 @@ async def main():
                 experience_level=args.experience_level,
                 job_type=args.job_type,
                 max_results=args.max_results,
-                skip_research=args.skip_research,
+                skip_research=not args.with_research,
                 skip_messages=args.skip_messages
             )
         

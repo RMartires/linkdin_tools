@@ -1,9 +1,7 @@
-"""Draft generation stage - generates cold LinkedIn DM drafts for enriched jobs"""
+"""Draft generation stage - thin wrapper around Orchestrator.generate_messages"""
 
 import asyncio
-import os
 import sys
-import yaml
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -11,149 +9,62 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import Database
-from src.draft_generator import DraftGenerator
-from src.template_draft_generator import TemplateDraftGenerator
-from src.google_sheets_client import update_draft_in_latest_worksheet
+from src.orchestrator import Orchestrator
 from src.utils.logger import logger
+from src.utils.config import get_use_template_mode
 
 load_dotenv()
 
 
 async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
     """
-    Generate drafts for enriched jobs
-    
+    Generate drafts for jobs (template mode works straight from scraped jobs).
+
     Args:
         batch_size: Number of drafts to generate in this run
         max_retries: Maximum retry attempts per job
     """
     db = Database()
-    generator = None
-    
+
     try:
         await db.connect()
         logger.info("=" * 60)
         logger.info("Starting draft generation stage")
         logger.info("=" * 60)
 
-        # Load config for generator mode
-        config_path = Path(__file__).parent / "pipeline_config.yaml"
-        config = {}
-        if config_path.exists():
-            with open(config_path) as f:
-                config = yaml.safe_load(f) or {}
-        generator_config = config.get("generator", {})
-        use_template_mode = generator_config.get("use_template_mode", False)
+        use_template = get_use_template_mode()
+        statuses = ["scraped", "enriched"] if use_template else ["enriched"]
+        jobs = await db.get_jobs_for_generation(
+            limit=batch_size, max_retries=max_retries, statuses=statuses
+        )
 
-        if use_template_mode:
-            logger.info("Using TemplateDraftGenerator (template mode, no AI)")
-            generator = TemplateDraftGenerator()
-        else:
-            logger.info("Using DraftGenerator (AI mode)")
-            generator = DraftGenerator(db=db)
-        
-        # Get jobs ready for generation
-        jobs = await db.get_jobs_for_generation(limit=batch_size, max_retries=max_retries)
-        
         if not jobs:
             logger.info("No jobs found ready for draft generation")
             return 0
-        
+
         logger.info(f"Found {len(jobs)} jobs ready for draft generation")
-        
-        generated_count = 0
+
+        orchestrator = Orchestrator(db)
+        results = await orchestrator.generate_messages(jobs=jobs)
+
+        # Retry bookkeeping for jobs that produced no draft
         failed_count = 0
-        
         for job in jobs:
-            try:
-                # Update status to "generating"
-                await db.update_job_status(job.job_id, "generating")
-                logger.info(f"Generating draft for job: {job.title} at {job.company}")
-                
-                # Get company research by company name
-                research = await db.get_company_research_by_name(job.company)
-                
-                if not research:
-                    error_msg = f"No company research found for company {job.company}"
-                    logger.warning(f"Job {job.job_id}: {error_msg}")
-                    await db.increment_generate_retry(job.job_id, error_msg)
-                    
-                    updated_job = await db.get_job_by_id(job.job_id)
-                    if updated_job and updated_job.generate_retry_count >= max_retries:
-                        await db.mark_job_failed(job.job_id, "generate", error_msg)
-                        failed_count += 1
-                    continue
-                
-                # Generate draft
-                draft = await generator.generate_draft(job, research)
-                
-                if not draft:
-                    error_msg = "Draft generation returned None"
-                    logger.warning(f"Job {job.job_id}: {error_msg}")
-                    await db.increment_generate_retry(job.job_id, error_msg)
-                    
-                    updated_job = await db.get_job_by_id(job.job_id)
-                    if updated_job and updated_job.generate_retry_count >= max_retries:
-                        await db.mark_job_failed(job.job_id, "generate", error_msg)
-                        failed_count += 1
-                    else:
-                        # Reset status back to "enriched" for retry
-                        await db.update_job_status(job.job_id, "enriched")
-                    continue
-                
-                # Save draft to database
-                try:
-                    await db.save_message(job.job_id, draft)
-                    logger.info(f"Saved draft to database for job {job.job_id}")
-                except Exception as e:
-                    logger.error(f"Failed to save draft to database for job {job.job_id}: {e}")
+            if job.job_id in results:
+                continue
+            error_msg = job.generate_error or "Draft generation produced no message"
+            await db.increment_generate_retry(job.job_id, error_msg)
+            updated_job = await db.get_job_by_id(job.job_id)
+            if updated_job and updated_job.generate_retry_count >= max_retries:
+                await db.mark_job_failed(job.job_id, "generate", error_msg)
+                failed_count += 1
+                logger.error(f"Job {job.job_id} marked as failed after {max_retries} retries")
 
-                # Success - update status and clear retry counters
-                await db.update_job_status(job.job_id, "draft_generated")
-                await db.clear_generate_retry_counters(job.job_id)
-                generated_count += 1
-                
-                # Log the generated draft
-                logger.info(f"✓ Successfully generated draft for job {job.job_id}")
-                logger.info(f"Draft content for {job.title} at {job.company}:\n{draft.message_text}")
+        logger.info(
+            f"Generation stage completed: {len(results)} generated, {failed_count} failed"
+        )
+        return len(results)
 
-                # Google Sheets integration: update draft in latest worksheet
-                spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
-                if spreadsheet_id:
-                    try:
-                        with open(config_path) as f:
-                            config = yaml.safe_load(f) or {}
-                        if config.get("google_sheets", {}).get("enabled"):
-                            await asyncio.to_thread(
-                                update_draft_in_latest_worksheet,
-                                spreadsheet_id,
-                                job.job_id,
-                                draft.message_text,
-                                draft.personalized_drafts,
-                            )
-                    except Exception as e:
-                        logger.warning(f"Google Sheets sync failed (non-fatal): {e}")
-                
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Error generating draft for job {job.job_id}: {error_msg}", exc_info=True)
-                
-                # Increment retry count
-                await db.increment_generate_retry(job.job_id, error_msg)
-                
-                # Check if max retries exceeded
-                updated_job = await db.get_job_by_id(job.job_id)
-                if updated_job and updated_job.generate_retry_count >= max_retries:
-                    await db.mark_job_failed(job.job_id, "generate", error_msg)
-                    failed_count += 1
-                    logger.error(f"Job {job.job_id} marked as failed after {max_retries} retries")
-                else:
-                    # Reset status back to "enriched" for retry
-                    await db.update_job_status(job.job_id, "enriched")
-        
-        logger.info(f"Generation stage completed: {generated_count} generated, {failed_count} failed")
-        return generated_count
-        
     except Exception as e:
         logger.error(f"Error in draft generation stage: {e}", exc_info=True)
         raise
@@ -163,13 +74,13 @@ async def generate_drafts_stage(batch_size: int = 10, max_retries: int = 3):
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description="Generate cold LinkedIn DM drafts for enriched jobs")
+
+    parser = argparse.ArgumentParser(description="Generate LinkedIn DM drafts for jobs")
     parser.add_argument("--batch-size", type=int, default=10, help="Number of drafts to generate")
     parser.add_argument("--max-retries", type=int, default=3, help="Maximum retry attempts")
-    
+
     args = parser.parse_args()
-    
+
     asyncio.run(generate_drafts_stage(
         batch_size=args.batch_size,
         max_retries=args.max_retries
