@@ -1966,15 +1966,19 @@ class JobScraperPlaywright:
             job_listings = []
             extracted_job_ids = set()
             page_num = 1
+            # Load extra cards up front so skiplist / known-ID skips don't leave us short
+            scroll_buffer = max(20, max_results * 2) + len(skiplist)
 
-            scroll_target = max_results + len(skip_job_ids)
-
-            while True:
-                # Scroll to load jobs on current page
+            while len(job_listings) < max_results:
+                cards_needed = max_results - len(job_listings)
+                scroll_target = len(extracted_job_ids) + cards_needed + scroll_buffer
                 await self._scroll_job_list(page, scroll_target)
 
                 # Extract job data - get list of cards
-                logger.info(f"Extracting job data from page {page_num}...")
+                logger.info(
+                    f"Extracting job data from page {page_num} "
+                    f"(have {len(job_listings)}/{max_results} kept jobs)..."
+                )
                 list_items = []
 
                 # Try using browser context evaluation (more reliable for dynamic content)
@@ -2094,6 +2098,9 @@ class JobScraperPlaywright:
 
                 logger.info(f"Found {len(list_items)} job cards to extract on page {page_num}")
 
+                kept_before = len(job_listings)
+                processed_new = 0
+
                 for i, list_item in enumerate(list_items):
                     if len(job_listings) >= max_results:
                         break
@@ -2187,6 +2194,7 @@ class JobScraperPlaywright:
                             logger.debug(f"Skipping duplicate job ID: {job_id}")
                             continue
                         extracted_job_ids.add(job_id)
+                        processed_new += 1
 
                         if job_id in skip_job_ids:
                             logger.info(f"Skipping already-known job {job_id}")
@@ -2260,18 +2268,38 @@ class JobScraperPlaywright:
                         logger.error(f"Error processing card {i+1}: {e}", exc_info=True)
                         continue
 
-                # After processing all cards on this page - check if we need next page
+                # After processing cards — keep going until we have max_results kept jobs
                 if len(job_listings) >= max_results:
-                    logger.info(f"Reached target of {max_results} jobs")
+                    logger.info(f"Reached target of {max_results} kept jobs")
                     break
 
-                # Try to go to next page
+                newly_kept = len(job_listings) - kept_before
+                logger.info(
+                    f"Progress: {len(job_listings)}/{max_results} kept "
+                    f"(+{newly_kept} this pass, {processed_new} new cards seen)"
+                )
+
+                # Prefer loading more via infinite scroll before pagination
+                ids_before_scroll = set(await self._get_job_ids(page))
+                await self._scroll_job_list(
+                    page, len(ids_before_scroll) + cards_needed + scroll_buffer
+                )
+                ids_after_scroll = set(await self._get_job_ids(page))
+                if len(ids_after_scroll - ids_before_scroll) > 0:
+                    logger.info(
+                        f"Loaded {len(ids_after_scroll - ids_before_scroll)} more cards via scroll; continuing"
+                    )
+                    continue
+
                 if await self._click_next_page(page):
                     page_num += 1
                     logger.info(f"Navigating to page {page_num}...")
-                else:
-                    logger.info("No Next button found, stopping pagination")
-                    break
+                    continue
+
+                logger.warning(
+                    f"No more jobs available — scraped {len(job_listings)}/{max_results} kept jobs"
+                )
+                break
 
             logger.info(f"Successfully scraped {len(job_listings)} jobs")
             if not job_listings:
