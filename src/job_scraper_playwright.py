@@ -11,7 +11,12 @@ from dotenv import load_dotenv
 
 from src.models import JobListing
 from src.session_manager import SessionManager
-from src.utils.linkedin import is_bad_job_title, resolve_company_name, company_name_from_slug
+from src.utils.linkedin import (
+    is_bad_job_title,
+    is_company_skipped,
+    resolve_company_name,
+    company_name_from_slug,
+)
 from src.utils.logger import logger
 
 load_dotenv()
@@ -889,12 +894,16 @@ class JobScraperPlaywright:
             if self._title_contains_excluded_word(title):
                 logger.info(f"Skipping job {item.get('job_id')}: title '{title}' contains excluded word")
                 continue
+            company = item.get("company") or "Unknown"
+            if is_company_skipped(company):
+                logger.info(f"Skipping job {item.get('job_id')}: company '{company}' is on skiplist")
+                continue
             try:
                 listings.append(
                     JobListing(
                         job_id=str(item["job_id"]),
                         title=title,
-                        company=item.get("company") or "Unknown",
+                        company=company,
                         url=item.get("url") or f"https://www.linkedin.com/jobs/view/{item['job_id']}",
                         status="scraped",
                     )
@@ -1925,6 +1934,10 @@ class JobScraperPlaywright:
         skip_job_ids = skip_job_ids or set()
         if skip_job_ids:
             logger.info(f"Skipping {len(skip_job_ids)} job IDs already in database")
+        from src.utils.linkedin import load_company_skiplist
+        skiplist = load_company_skiplist()
+        if skiplist:
+            logger.info(f"Company skiplist active ({len(skiplist)} names)")
         
         try:
             # Get Playwright page from persistent LinkedIn profile
@@ -2217,6 +2230,11 @@ class JobScraperPlaywright:
                             company_name = resolve_company_name(
                                 job_data.get("company"), company_url
                             )
+                            if is_company_skipped(company_name, company_url):
+                                logger.info(
+                                    f"Skipping job {job_id}: company '{company_name}' is on skiplist"
+                                )
+                                continue
                             job_listing = JobListing(
                                 job_id=job_id,
                                 title=job_data.get('title', ''),

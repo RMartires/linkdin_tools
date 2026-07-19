@@ -23,3 +23,6 @@ curl -X POST \
 ./scripts/status_pipeline.sh
 
 source .venv/bin/activate
+
+python main.py --keywords "senior software engineer" --location "Singapore" --max-results 5
+python main.py --keywords "senior software engineer" --location "Dubai, United Arab Emirates" --max-results 5
