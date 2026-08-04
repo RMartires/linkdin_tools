@@ -1,18 +1,13 @@
 """Template-based draft generator for LinkedIn notes (400 char limit). No AI."""
 
-import re
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 from src.models import JobListing, CompanyResearch, GeneratedMessage
 from src.utils.logger import logger
 
-# Resume links by job category
-RESUME_LINKS: dict[str, str] = {
-    "data/AI": "https://tinyurl.com/yawat3hx",
-    "fullstack": "https://tinyurl.com/22xzevft",
-    "backend": "https://tinyurl.com/yd2wfads",
-}
+SINGAPORE_CV_URL = "https://tinyurl.com/yawat3hx"
+DEFAULT_CV_URL = "https://tinyurl.com/yd2wfads"
 
 
 class TemplateDraftGenerator:
@@ -40,39 +35,24 @@ class TemplateDraftGenerator:
         logger.info(f"Loaded LinkedIn note template from {self.template_path}")
         return self._template
 
-    def _classify_job_title(self, job_title: str) -> Literal["backend", "fullstack", "data/AI"]:
-        """Classify job title into backend, fullstack, or data/AI based on keywords."""
-        title_lower = job_title.lower()
+    @staticmethod
+    def _is_singapore_job(location: Optional[str]) -> bool:
+        """True when the job location indicates Singapore."""
+        if not location:
+            return False
+        loc = location.lower()
+        return "singapore" in loc or loc.strip() in {"sg", "sgp"}
 
-        # data/AI: check first (most specific)
-        data_ai_keywords = [
-            r"\bai\b", r"\bml\b", r"\bmachine learning\b", r"\bdata science\b",
-            r"\bdata engineer", r"\bdata analyst", r"\banalytics\b", r"\bnlp\b",
-            r"\bdeep learning\b", r"\bcomputer vision\b", r"\bllm\b",
-        ]
-        for kw in data_ai_keywords:
-            if re.search(kw, title_lower):
-                return "data/AI"
-
-        # fullstack
-        fullstack_keywords = [
-            r"\bfullstack\b", r"\bfull-stack\b", r"\bfull stack\b",
-            r"\bfrontend\b", r"\bfront-end\b", r"\bfront end\b",
-            r"\breact\b", r"\bangular\b", r"\bvue\b",
-        ]
-        for kw in fullstack_keywords:
-            if re.search(kw, title_lower):
-                return "fullstack"
-
-        # backend (default)
-        return "backend"
+    def _cv_url_for_job(self, job: JobListing) -> str:
+        if self._is_singapore_job(job.location):
+            return SINGAPORE_CV_URL
+        return DEFAULT_CV_URL
 
     def build_message(self, job: JobListing, research: Optional[CompanyResearch] = None) -> str:
         """Replace placeholders with job data. [Name] stays for manual fill-in."""
         template = self._load_template()
         company_name = research.company_name if research else job.company
-        category = self._classify_job_title(job.title)
-        cv_url = RESUME_LINKS.get(category, RESUME_LINKS["backend"])
+        cv_url = self._cv_url_for_job(job)
         return (
             template.replace("[CompanyName]", company_name)
             .replace("[JobRole]", job.title)

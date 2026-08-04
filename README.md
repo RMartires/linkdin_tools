@@ -146,7 +146,7 @@ Github: https://github.com/RMartires
 ```
 
 - `[Name]` — fill in manually when messaging someone
-- `[CvUrl]` — picked by job title category (backend / fullstack / data-AI)
+- `[CvUrl]` — Singapore jobs use `https://tinyurl.com/yawat3hx`; all others use the default CV link
 - Edit the template file to change the message; no code changes needed
 
 ### List jobs
