@@ -919,18 +919,135 @@ class JobScraperPlaywright:
         title_lower = title.lower()
         return any(word.lower() in title_lower for word in JOB_TITLE_EXCLUDED_WORDS)
 
-    async def _click_next_page(self, page) -> bool:
-        """Click the Next pagination button if visible. Returns True if clicked, False if not found."""
-        # Next button: data-testid="pagination-controls-next-button-visible" when more pages exist
-        next_btn = await page.query_selector('button[data-testid="pagination-controls-next-button-visible"]')
-        if not next_btn:
-            return False
+    async def _pagination_roots(self, page):
+        """Return page + frames so pagination can be found in either context."""
+        roots = [page]
         try:
-            await next_btn.click()
-            await asyncio.sleep(2)  # Wait for new page to load
-            return True
+            for frame in page.frames:
+                if frame != page.main_frame:
+                    roots.append(frame)
+        except Exception:
+            pass
+        return roots
+
+    async def _click_next_page(self, page) -> bool:
+        """Click Next / page-N controls (classic + new LinkedIn UIs)."""
+        selectors = [
+            # New LinkedIn jobs UI
+            'button[data-testid="pagination-controls-next-button-visible"]',
+            'button[data-testid="pagination-controls-next-button"]',
+            # Classic artdeco pagination (screenshot UI)
+            'button.artdeco-pagination__button--next',
+            'button[aria-label="Next"]',
+            'button[aria-label="Next Page"]',
+        ]
+        # Numbered page buttons as last resort (click first non-current page)
+        page_num_selectors = [
+            'button[data-testid^="pagination-indicator-"]',
+            'li.artdeco-pagination__indicator--number button',
+            'button[aria-label^="Page "]',
+        ]
+
+        roots = await self._pagination_roots(page)
+
+        async def _try_click(btn, selector: str) -> bool:
+            try:
+                disabled = await btn.get_attribute("disabled")
+                aria_disabled = await btn.get_attribute("aria-disabled")
+                if disabled is not None or aria_disabled == "true":
+                    return False
+                await btn.scroll_into_view_if_needed()
+                await asyncio.sleep(0.3)
+                await btn.click()
+                logger.info(f"Clicked pagination control via '{selector}'")
+                await asyncio.sleep(3)
+                return True
+            except Exception as e:
+                logger.debug(f"Pagination click failed for '{selector}': {e}")
+                return False
+
+        for root in roots:
+            for selector in selectors:
+                try:
+                    btn = await root.query_selector(selector)
+                except Exception:
+                    continue
+                if btn and await _try_click(btn, selector):
+                    return True
+
+        # Fall back to clicking the next numbered page (aria-current != true)
+        for root in roots:
+            for selector in page_num_selectors:
+                try:
+                    buttons = await root.query_selector_all(selector)
+                except Exception:
+                    continue
+                for btn in buttons:
+                    try:
+                        if await btn.get_attribute("aria-current") == "true":
+                            continue
+                        if await _try_click(btn, selector):
+                            return True
+                    except Exception:
+                        continue
+        return False
+
+    async def _goto_next_results_page(self, page, next_start: int) -> bool:
+        """Advance to the next results page via Next click, else URL start= fallback.
+
+        LinkedIn serves ~25 jobs per page; next_start should be 25, 50, 75, ...
+        """
+        ids_before = await self._get_job_ids(page)
+
+        if await self._click_next_page(page):
+            # Confirm results actually changed; if not, fall through to URL nav
+            deadline = time.time() + 12
+            while time.time() < deadline:
+                ids_after = await self._get_job_ids(page)
+                if ids_after and ids_after != ids_before:
+                    logger.info(
+                        f"Pagination click loaded {len(ids_after)} cards "
+                        f"({len(ids_after - ids_before)} new vs previous page)"
+                    )
+                    return True
+                await asyncio.sleep(1)
+            logger.warning("Pagination click did not change job cards; trying URL start= fallback")
+
+        # Reliable fallback: mutate start= on the current search URL
+        try:
+            parsed = urlparse(page.url)
+            params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            params["start"] = str(next_start)
+            # Drop currentJobId so the list refreshes cleanly
+            params.pop("currentJobId", None)
+            new_query = urlencode(params)
+            new_url = urlunparse(
+                (parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, "")
+            )
+            logger.info(f"Navigating to next results via start={next_start}: {new_url}")
+            await page.goto(new_url, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(4)
+
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                ids_after = await self._get_job_ids(page)
+                if ids_after and ids_after != ids_before:
+                    logger.info(
+                        f"URL pagination loaded {len(ids_after)} cards at start={next_start}"
+                    )
+                    return True
+                await asyncio.sleep(1)
+
+            ids_after = await self._get_job_ids(page)
+            if ids_after and ids_after != ids_before:
+                return True
+            logger.warning(
+                f"No new job cards after start={next_start} "
+                f"(before={len(ids_before)}, after={len(ids_after)})"
+            )
+            return False
         except Exception as e:
-            logger.warning(f"Failed to click Next button: {e}")
+            logger.warning(f"URL pagination fallback failed: {e}")
             return False
 
     async def _scroll_job_list(self, page, max_results: int):
@@ -1957,19 +2074,19 @@ class JobScraperPlaywright:
             if experience_level or job_type:
                 await self._apply_filters(page, experience_level, job_type)
 
-            # Find the frame that contains job cards (iframes are common)
-            target_frame = await self._find_target_frame(page)
-            extraction_page = target_frame if target_frame else page
-            if target_frame:
-                logger.debug("Using iframe for job extraction")
-
             job_listings = []
             extracted_job_ids = set()
             page_num = 1
+            # LinkedIn serves ~25 jobs per results page; used for start= URL fallback
+            results_per_page = 25
             # Load extra cards up front so skiplist / known-ID skips don't leave us short
             scroll_buffer = max(20, max_results * 2) + len(skiplist)
 
             while len(job_listings) < max_results:
+                # Frame can change after pagination — re-resolve each pass
+                target_frame = await self._find_target_frame(page)
+                extraction_page = target_frame if target_frame else page
+
                 cards_needed = max_results - len(job_listings)
                 scroll_target = len(extracted_job_ids) + cards_needed + scroll_buffer
                 await self._scroll_job_list(page, scroll_target)
@@ -2093,7 +2210,16 @@ class JobScraperPlaywright:
                     if fallback_jobs:
                         logger.info(f"Fallback extracted {len(fallback_jobs)} jobs from /jobs/view/ links")
                         return fallback_jobs
-                    logger.info("No job cards found on this page, stopping")
+                    # Try advancing to next page before giving up entirely
+                    next_start = page_num * results_per_page
+                    logger.info(
+                        f"No cards on page {page_num}; attempting page {page_num + 1} "
+                        f"(start={next_start})..."
+                    )
+                    if await self._goto_next_results_page(page, next_start):
+                        page_num += 1
+                        continue
+                    logger.info("No job cards found and no further pages available, stopping")
                     break
 
                 logger.info(f"Found {len(list_items)} job cards to extract on page {page_num}")
@@ -2285,15 +2411,21 @@ class JobScraperPlaywright:
                     page, len(ids_before_scroll) + cards_needed + scroll_buffer
                 )
                 ids_after_scroll = set(await self._get_job_ids(page))
-                if len(ids_after_scroll - ids_before_scroll) > 0:
+                new_via_scroll = ids_after_scroll - ids_before_scroll
+                if new_via_scroll:
                     logger.info(
-                        f"Loaded {len(ids_after_scroll - ids_before_scroll)} more cards via scroll; continuing"
+                        f"Loaded {len(new_via_scroll)} more cards via scroll; continuing"
                     )
                     continue
 
-                if await self._click_next_page(page):
+                # No more cards on this page — advance pagination until target or pages end
+                next_start = page_num * results_per_page
+                logger.info(
+                    f"Page {page_num} exhausted ({len(job_listings)}/{max_results} kept); "
+                    f"advancing to page {page_num + 1} (start={next_start})..."
+                )
+                if await self._goto_next_results_page(page, next_start):
                     page_num += 1
-                    logger.info(f"Navigating to page {page_num}...")
                     continue
 
                 logger.warning(
